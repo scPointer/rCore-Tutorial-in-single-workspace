@@ -1,6 +1,7 @@
 #![no_std]
 #![no_main]
 #![feature(naked_functions)]
+#![feature(panic_info_message)]
 #![deny(warnings)]
 
 use polyhal::instruction::Instruction;
