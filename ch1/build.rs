@@ -9,22 +9,52 @@ fn main() {
 
 const LINKER: &[u8] = b"
 OUTPUT_ARCH(riscv)
-SECTIONS {
-    .text 0x80200000 : {
+ENTRY(_start)
+
+BASE_ADDRESS = 0xffffffc080200000;
+
+SECTIONS
+{
+    . = BASE_ADDRESS;
+    start = .;
+    _skernel = .;
+
+    .text ALIGN(4K): {
+        stext = .;
         *(.text.entry)
         *(.text .text.*)
+        etext = .;
     }
-    .rodata : {
+
+    .rodata ALIGN(4K): {
+        srodata = .;
         *(.rodata .rodata.*)
-        *(.srodata .srodata.*)
+        . = ALIGN(4K);
+        erodata = .;
     }
-    .data : {
+
+    .data ALIGN(4K): {
+        . = ALIGN(4K);
+        *(.data.prepage .data.prepage.*)
+        . = ALIGN(4K);
+        _sdata = .;
         *(.data .data.*)
         *(.sdata .sdata.*)
+        _edata = .;
     }
-    .bss : {
-        *(.bss.uninit)
+
+    _load_end = .;
+
+    .bss ALIGN(4K): {
+        *(.bss.stack)
+        _sbss = .;
         *(.bss .bss.*)
         *(.sbss .sbss.*)
+        _ebss = .;
+    }
+
+    PROVIDE(end = .);
+    /DISCARD/ : {
+        *(.comment) *(.gnu*) *(.note*) *(.eh_frame*)
     }
 }";
