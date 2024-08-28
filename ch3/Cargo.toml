@@ -5,8 +5,7 @@ edition = "2021"
 authors = ["YdrMaster <ydrml@hotmail.com>"]
 
 [dependencies]
-sbi-rt = { version = "0.0.2", features = ["legacy"] }
-riscv = "0.10.1"
+polyhal = { git = "https://github.com/Byte-OS/polyhal.git", features = ["kcontext", "trap", "boot"]}
 
 linker = { path = "../linker" }
 rcore-console = { path = "../console" }

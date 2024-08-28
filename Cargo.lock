@@ -145,13 +145,11 @@ name = "ch2"
 version = "0.0.1"
 dependencies = [
  "buddy_system_allocator",
- "kernel-context",
  "lazy_static",
  "linker",
  "log",
  "polyhal",
  "rcore-console",
- "riscv 0.10.1",
  "syscall",
 ]
 
@@ -161,9 +159,8 @@ version = "0.0.1"
 dependencies = [
  "kernel-context",
  "linker",
+ "polyhal",
  "rcore-console",
- "riscv 0.10.1",
- "sbi-rt",
  "syscall",
 ]
 

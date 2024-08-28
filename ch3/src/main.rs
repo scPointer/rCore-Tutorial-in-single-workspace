@@ -18,9 +18,8 @@ use task::TaskControlBlock;
 core::arch::global_asm!(include_str!(env!("APP_ASM")));
 // 应用程序数量。
 const APP_CAPACITY: usize = 32;
-// 定义内核入口。
-linker::boot0!(rust_main; stack = (APP_CAPACITY + 2) * 4096);
-
+//The entry point
+#[polyhal::arch_entry]
 extern "C" fn rust_main() -> ! {
     // bss 段清零
     unsafe { linker::KernelLayout::locate().zero_bss() };
