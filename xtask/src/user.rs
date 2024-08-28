@@ -76,6 +76,7 @@ pub fn build_for(ch: u8, release: bool) {
         .remove(&format!("ch{ch}"))
         .unwrap_or_default();
     let CasesInfo { base, step, bins } = cases.build(release);
+    let base = base + 0xffffffc000000000;
     if bins.is_empty() {
         return;
     }

@@ -144,11 +144,14 @@ dependencies = [
 name = "ch2"
 version = "0.0.1"
 dependencies = [
+ "buddy_system_allocator",
  "kernel-context",
+ "lazy_static",
  "linker",
+ "log",
+ "polyhal",
  "rcore-console",
  "riscv 0.10.1",
- "sbi-rt",
  "syscall",
 ]
 
@@ -407,6 +410,15 @@ name = "kernel-vm"
 version = "0.1.0"
 dependencies = [
  "page-table",
+ "spin 0.9.8",
+]
+
+[[package]]
+name = "lazy_static"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "bbd2bcb4c963f2ddae06a2efc7e9f3591312473c50c6685e1f298068316e66fe"
+dependencies = [
  "spin 0.9.8",
 ]
 

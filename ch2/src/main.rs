@@ -1,75 +1,163 @@
 #![no_std]
 #![no_main]
 #![feature(naked_functions)]
-#![deny(warnings)]
+#![feature(alloc_error_handler)]
+// #![deny(warnings)]
 
 #[macro_use]
 extern crate rcore_console;
-
+extern crate alloc;
+use buddy_system_allocator::LockedHeap;
+use frame_allocater::{frame_alloc_persist, frame_dealloc, init_frame_allocator};
+use heap_allocator::init_heap;
 use impls::{Console, SyscallContext};
-use kernel_context::LocalContext;
-use rcore_console::log;
-use riscv::register::*;
-use sbi_rt::*;
+use log::info;
+use polyhal::boot::boot_page_table;
+use polyhal::common::{get_mem_areas, PageAlloc};
+use polyhal::consts::VIRT_ADDR_START;
+use polyhal::debug_console::DebugConsole;
+use polyhal::instruction::Instruction;
+use polyhal::pagetable::PageTableWrapper;
+use polyhal::pagetable::PAGE_SIZE;
+use polyhal::trap::{
+    run_user_task, EscapeReason,
+    TrapType::{self, *},
+};
+use polyhal::trapframe::{TrapFrame, TrapFrameArgs};
+use polyhal::{MappingFlags, MappingSize, PageTable, PhysPage, VirtPage};
+use rcore_console::{init_console, log, set_log_level};
 use syscall::{Caller, SyscallId};
+mod config;
+pub mod frame_allocater;
+pub mod heap_allocator;
+mod sync;
+#[global_allocator]
+static HEAP_ALLOCATOR: LockedHeap = LockedHeap::empty();
+pub struct PageAllocImpl;
+
+impl PageAlloc for PageAllocImpl {
+    #[inline]
+    fn alloc(&self) -> PhysPage {
+        frame_alloc_persist().expect("can't find memory page")
+    }
+
+    #[inline]
+    fn dealloc(&self, ppn: PhysPage) {
+        frame_dealloc(ppn)
+    }
+}
 
 // 用户程序内联进来。
 core::arch::global_asm!(include_str!(env!("APP_ASM")));
-// 定义内核入口。
-linker::boot0!(rust_main; stack = 4 * 4096);
 
+static mut Exit:bool = false;
+#[polyhal::arch_interrupt]
+fn kernel_interrupt(ctx: &mut TrapFrame, trap_type: TrapType) {
+    // log::info!("trap_type @ {:x?} {:#x?}", trap_type, ctx);
+
+    match trap_type {
+        Timer | SysCall => {},
+        StorePageFault(_paddr) | LoadPageFault(_paddr) | InstructionPageFault(_paddr) => {
+            println!(
+                "[kernel] PageFault in application, kernel killed it. paddr={:x}",
+                _paddr
+            );
+            unsafe {
+                Exit = true;
+            }
+    }
+       _=>{}
+}
+}
+//The entry point
+#[polyhal::arch_entry]
 extern "C" fn rust_main() -> ! {
-    // bss 段清零
-    unsafe { linker::KernelLayout::locate().zero_bss() };
-    // 初始化 `console`
-    rcore_console::init_console(&Console);
-    rcore_console::set_log_level(option_env!("LOG"));
-    rcore_console::test_log();
+    log::info!("hello!");
+    init_heap();
+    init_console(&impls::Console);
+    set_log_level(Some("Debug"));
+    polyhal::common::init(&PageAllocImpl);
+    get_mem_areas().into_iter().for_each(|(start, size)| {
+        info!(
+            "frame alloocator add frame {:#x} - {:#x}",
+            start,
+            start + size
+        );
+        init_frame_allocator(start, start + size);
+    });
+
     // 初始化 syscall
     syscall::init_io(&SyscallContext);
     syscall::init_process(&SyscallContext);
-    // 批处理
+
     for (i, app) in linker::AppMeta::locate().iter().enumerate() {
-        let app_base = app.as_ptr() as usize;
+        let new_page_table = PageTableWrapper::alloc();
+        new_page_table.change();
+        let app_base = app.as_ptr() as usize - VIRT_ADDR_START;
+        for i in 0..0x20 {
+            new_page_table.map_page(
+                VirtPage::from_addr(app_base + PAGE_SIZE * i),
+                PhysPage::from_addr(app_base + PAGE_SIZE * i),
+                MappingFlags::URWX,
+                MappingSize::Page4KB,
+            );
+        }
+        new_page_table.map_page(
+            VirtPage::from_addr(0x1_8000_0000),
+            frame_alloc_persist().expect("can't allocate frame"),
+            MappingFlags::URWX,
+            MappingSize::Page4KB,
+        );
+
+        log::info!("[kernel] Loading app_{}", i);
         log::info!("load app{i} to {app_base:#x}");
         // 初始化上下文
-        let mut ctx = LocalContext::user(app_base);
-        // 设置用户栈
-        let mut user_stack = [0usize; 256];
-        *ctx.sp_mut() = user_stack.as_mut_ptr() as usize + core::mem::size_of_val(&user_stack);
+        let mut ctx = TrapFrame::new();
+        ctx[TrapFrameArgs::SEPC] = app_base;
+        ctx[TrapFrameArgs::SP] = 0x1_8000_0000 + PAGE_SIZE;
+        new_page_table.change();
+
+        let mut ctx_mut = unsafe { (&mut ctx as *mut TrapFrame).as_mut().unwrap() };
         // 执行应用程序
         loop {
-            unsafe { ctx.execute() };
+            let esr = run_user_task(ctx_mut);
 
-            use scause::{Exception, Trap};
-            match scause::read().cause() {
-                Trap::Exception(Exception::UserEnvCall) => {
+            match esr {
+                EscapeReason::SysCall => {
+                    ctx_mut.syscall_ok();
                     use SyscallResult::*;
-                    match handle_syscall(&mut ctx) {
+                    match handle_syscall(&mut ctx_mut) {
                         Done => continue,
-                        Exit(code) => log::info!("app{i} exit with code {code}"),
-                        Error(id) => log::error!("app{i} call an unsupported syscall {}", id.0),
+                        Exit(code) => {
+                            log::info!("app{i} exit with code {code}");
+                            break;
+                        },
+                        Error(id) => {
+                            log::error!("app{i} call an unsupported syscall {}", id.0);
+                            break;
+                        },
                     }
                 }
-                trap => log::error!("app{i} was killed because of {trap:?}"),
+                _ => {},
             }
-            // 清除指令缓存
-            unsafe { core::arch::asm!("fence.i") };
-            break;
+            unsafe {
+            if(Exit == true){
+                    Exit = false;
+                break;
+            }
         }
-        println!();
+        }
+        
+        boot_page_table().change();
     }
-
-    system_reset(Shutdown, NoReason);
-    unreachable!()
+    Instruction::shutdown();
 }
 
 /// Rust 异常处理函数，以异常方式关机。
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
     println!("{info}");
-    system_reset(Shutdown, SystemFailure);
-    loop {}
+    Instruction::shutdown();
 }
 
 enum SyscallResult {
@@ -79,26 +167,22 @@ enum SyscallResult {
 }
 
 /// 处理系统调用，返回是否应该终止程序。
-fn handle_syscall(ctx: &mut LocalContext) -> SyscallResult {
+fn handle_syscall(ctx: &mut TrapFrame) -> SyscallResult {
     use syscall::{SyscallId as Id, SyscallResult as Ret};
-
-    let id = ctx.a(7).into();
-    let args = [ctx.a(0), ctx.a(1), ctx.a(2), ctx.a(3), ctx.a(4), ctx.a(5)];
+    let args = ctx.args();
+    let id = ctx[TrapFrameArgs::SYSCALL].into();
     match syscall::handle(Caller { entity: 0, flow: 0 }, id, args) {
         Ret::Done(ret) => match id {
-            Id::EXIT => SyscallResult::Exit(ctx.a(0)),
-            _ => {
-                *ctx.a_mut(0) = ret as _;
-                ctx.move_next();
-                SyscallResult::Done
-            }
+            Id::EXIT => SyscallResult::Exit(args[0]),
+            _ => SyscallResult::Done,
         },
         Ret::Unsupported(id) => SyscallResult::Error(id),
     }
 }
 
-/// 各种接口库的实现
+/// 各种接口库的实现print
 mod impls {
+    use polyhal::debug_console::DebugConsole;
     use syscall::{STDDEBUG, STDOUT};
 
     pub struct Console;
@@ -107,7 +191,7 @@ mod impls {
         #[inline]
         fn put_char(&self, c: u8) {
             #[allow(deprecated)]
-            sbi_rt::legacy::console_putchar(c as _);
+            DebugConsole::putchar(c as _);
         }
     }
 

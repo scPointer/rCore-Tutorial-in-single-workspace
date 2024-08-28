@@ -39,221 +39,53 @@ pub use app::{AppIterator, AppMeta};
 /// 链接脚本。
 pub const SCRIPT: &[u8] = b"\
 OUTPUT_ARCH(riscv)
-SECTIONS {
-    .text 0x80200000 : {
-        __start = .;
+ENTRY(_start)
+
+BASE_ADDRESS = 0xffffffc080200000;
+
+SECTIONS
+{
+    . = BASE_ADDRESS;
+    start = .;
+    _skernel = .;
+
+    .text ALIGN(4K): {
+        stext = .;
         *(.text.entry)
         *(.text .text.*)
+        etext = .;
     }
-    .rodata : ALIGN(4K) {
-        __rodata = .;
+
+    .rodata ALIGN(4K): {
+        srodata = .;
         *(.rodata .rodata.*)
-        *(.srodata .srodata.*)
+        . = ALIGN(4K);
+        erodata = .;
     }
-    .data : ALIGN(4K) {
-        __data = .;
+
+    .data ALIGN(4K): {
+        . = ALIGN(4K);
+        *(.data.prepage .data.prepage.*)
+        . = ALIGN(4K);
+        _sdata = .;
         *(.data .data.*)
         *(.sdata .sdata.*)
+        _edata = .;
     }
-    .bss : ALIGN(8) {
-        __sbss = .;
+
+    _load_end = .;
+
+    .bss ALIGN(4K): {
+        *(.bss.stack)
+        _sbss = .;
         *(.bss .bss.*)
         *(.sbss .sbss.*)
-        __ebss = .;
+        _ebss = .;
     }
-    .boot : ALIGN(4K) {
-        __boot = .;
-        KEEP(*(.boot.stack))
+
+    PROVIDE(end = .);
+    /DISCARD/ : {
+        *(.comment) *(.gnu*) *(.note*) *(.eh_frame*)
     }
-    __end = .;
 }";
 
-/// 定义内核入口。
-///
-/// 将设置一个启动栈，并在启动栈上调用高级语言入口。
-#[macro_export]
-macro_rules! boot0 {
-    ($entry:ident; stack = $stack:expr) => {
-        #[naked]
-        #[no_mangle]
-        #[link_section = ".text.entry"]
-        unsafe extern "C" fn _start() -> ! {
-            #[link_section = ".boot.stack"]
-            static mut STACK: [u8; $stack] = [0u8; $stack];
-
-            core::arch::asm!(
-                "la sp, __end",
-                "j  {main}",
-                main = sym rust_main,
-                options(noreturn),
-            )
-        }
-    };
-}
-
-/// 内核地址信息。
-#[derive(Debug)]
-pub struct KernelLayout {
-    text: usize,
-    rodata: usize,
-    data: usize,
-    sbss: usize,
-    ebss: usize,
-    boot: usize,
-    end: usize,
-}
-
-impl KernelLayout {
-    /// 非零初始化，避免 bss。
-    pub const INIT: Self = Self {
-        text: usize::MAX,
-        rodata: usize::MAX,
-        data: usize::MAX,
-        sbss: usize::MAX,
-        ebss: usize::MAX,
-        boot: usize::MAX,
-        end: usize::MAX,
-    };
-
-    /// 定位内核布局。
-    #[inline]
-    pub fn locate() -> Self {
-        extern "C" {
-            fn __start();
-            fn __rodata();
-            fn __data();
-            fn __sbss();
-            fn __ebss();
-            fn __boot();
-            fn __end();
-        }
-
-        Self {
-            text: __start as _,
-            rodata: __rodata as _,
-            data: __data as _,
-            sbss: __sbss as _,
-            ebss: __ebss as _,
-            boot: __boot as _,
-            end: __end as _,
-        }
-    }
-
-    /// 内核起始地址。
-    #[inline]
-    pub const fn start(&self) -> usize {
-        self.text
-    }
-
-    /// 内核结尾地址。
-    #[inline]
-    pub const fn end(&self) -> usize {
-        self.end
-    }
-
-    /// 内核静态二进制长度。
-    #[inline]
-    pub const fn len(&self) -> usize {
-        self.end - self.text
-    }
-
-    /// 清零 .bss 段。
-    #[inline]
-    pub unsafe fn zero_bss(&self) {
-        let mut ptr = self.sbss as *mut u8;
-        let end = self.ebss as *mut u8;
-        while ptr < end {
-            // **NOTICE** 单核其实无所谓，多核必须 volatile write 其他核才能看见
-            ptr.write_volatile(0);
-            ptr = ptr.offset(1);
-        }
-    }
-
-    /// 内核区段迭代器。
-    #[inline]
-    pub fn iter(&self) -> KernelRegionIterator {
-        KernelRegionIterator {
-            layout: self,
-            next: Some(KernelRegionTitle::Text),
-        }
-    }
-}
-
-use core::{fmt, ops::Range};
-
-/// 内核内存分区迭代器。
-pub struct KernelRegionIterator<'a> {
-    layout: &'a KernelLayout,
-    next: Option<KernelRegionTitle>,
-}
-
-/// 内核内存分区名称。
-#[derive(Clone, Copy)]
-pub enum KernelRegionTitle {
-    /// 代码段。
-    Text,
-    /// 只读数据段。
-    Rodata,
-    /// 数据段。
-    Data,
-    /// 启动数据段。
-    Boot,
-}
-
-/// 内核内存分区。
-pub struct KernelRegion {
-    /// 分区名称。
-    pub title: KernelRegionTitle,
-    /// 分区地址范围。
-    pub range: Range<usize>,
-}
-
-impl fmt::Display for KernelRegion {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self.title {
-            KernelRegionTitle::Text => write!(f, ".text ----> ")?,
-            KernelRegionTitle::Rodata => write!(f, ".rodata --> ")?,
-            KernelRegionTitle::Data => write!(f, ".data ----> ")?,
-            KernelRegionTitle::Boot => write!(f, ".boot ----> ")?,
-        }
-        write!(f, "{:#10x}..{:#10x}", self.range.start, self.range.end)
-    }
-}
-
-impl Iterator for KernelRegionIterator<'_> {
-    type Item = KernelRegion;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        use KernelRegionTitle::*;
-        match self.next? {
-            Text => {
-                self.next = Some(Rodata);
-                Some(KernelRegion {
-                    title: Text,
-                    range: self.layout.text..self.layout.rodata,
-                })
-            }
-            Rodata => {
-                self.next = Some(Data);
-                Some(KernelRegion {
-                    title: Rodata,
-                    range: self.layout.rodata..self.layout.data,
-                })
-            }
-            Data => {
-                self.next = Some(Boot);
-                Some(KernelRegion {
-                    title: Data,
-                    range: self.layout.data..self.layout.ebss,
-                })
-            }
-            Boot => {
-                self.next = None;
-                Some(KernelRegion {
-                    title: Boot,
-                    range: self.layout.boot..self.layout.end,
-                })
-            }
-        }
-    }
-}
