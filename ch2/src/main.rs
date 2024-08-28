@@ -66,7 +66,14 @@ fn kernel_interrupt(ctx: &mut TrapFrame, trap_type: TrapType) {
                 Exit = true;
             }
     }
-       _=>{}
+    IllegalInstruction(_) => {
+        unsafe {
+            Exit = true;
+        }
+    }
+       _=>{
+        panic!("{:?}",trap_type);
+       }
 }
 }
 //The entry point
