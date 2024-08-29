@@ -21,8 +21,6 @@ const APP_CAPACITY: usize = 32;
 //The entry point
 #[polyhal::arch_entry]
 extern "C" fn rust_main() -> ! {
-    // bss 段清零
-    unsafe { linker::KernelLayout::locate().zero_bss() };
     // 初始化 `console`
     rcore_console::init_console(&Console);
     rcore_console::set_log_level(option_env!("LOG"));
