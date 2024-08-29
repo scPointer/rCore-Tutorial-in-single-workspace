@@ -1,27 +1,58 @@
 #![no_std]
 #![no_main]
 #![feature(naked_functions)]
-#![deny(warnings)]
+#![feature(alloc_error_handler)]
 
 mod task;
 
 #[macro_use]
 extern crate rcore_console;
+extern crate alloc;
 
+// use buddy_system_allocator::LockedHeap;
+use frame_allocater::{frame_alloc_persist, frame_dealloc, init_frame_allocator};
+//use heap_allocator::init_heap;
 use impls::{Console, SyscallContext};
-use rcore_console::log;
-use riscv::register::*;
-use sbi_rt::*;
+use polyhal::{common::{get_mem_areas, PageAlloc}, consts::VIRT_ADDR_START, instruction::Instruction, pagetable::PAGE_SIZE, trap::{EscapeReason, TrapType}, trapframe::TrapFrame, MappingFlags, MappingSize, PageTableWrapper, PhysPage, VirtPage};
+use rcore_console::log::{self, info};
 use task::TaskControlBlock;
+use polyhal::time::Time;
+pub mod frame_allocater;
+//pub mod heap_allocator;
+mod sync;
+pub mod config;
+use alloc::vec::Vec;
+use TrapType::*;
+
+// #[global_allocator]
+// static HEAP_ALLOCATOR: LockedHeap = LockedHeap::empty();
+pub struct PageAllocImpl;
+impl PageAlloc for PageAllocImpl {
+    #[inline]
+    fn alloc(&self) -> PhysPage {
+        frame_alloc_persist().expect("can't find memory page")
+    }
+
+    #[inline]
+    fn dealloc(&self, ppn: PhysPage) {
+        frame_dealloc(ppn)
+    }
+}
 
 // 应用程序内联进来。
 core::arch::global_asm!(include_str!(env!("APP_ASM")));
 // 应用程序数量。
 const APP_CAPACITY: usize = 32;
+#[polyhal::arch_interrupt]
+fn kernel_interrupt(ctx: &mut TrapFrame, trap_type: TrapType) {
+    // log::info!("trap_type @ {:x?} ", trap_type);
+
+}
 //The entry point
 #[polyhal::arch_entry]
 extern "C" fn rust_main() -> ! {
     // 初始化 `console`
+    kernel_alloc::init_heap();
     rcore_console::init_console(&Console);
     rcore_console::set_log_level(option_env!("LOG"));
     rcore_console::test_log();
@@ -30,19 +61,48 @@ extern "C" fn rust_main() -> ! {
     syscall::init_process(&SyscallContext);
     syscall::init_scheduling(&SyscallContext);
     syscall::init_clock(&SyscallContext);
+    polyhal::common::init(&PageAllocImpl);
+    get_mem_areas().into_iter().for_each(|(start, size)| {
+        info!(
+            "frame alloocator add frame {:#x} - {:#x}",
+            start,
+            start + size
+        );
+        init_frame_allocator(start, start + size);
+    });
+
     // 任务控制块
-    let mut tcbs = [TaskControlBlock::ZERO; APP_CAPACITY];
+    let mut tcbs = Vec::<TaskControlBlock>::new();
+    for _ in 0..APP_CAPACITY{
+        tcbs.push(TaskControlBlock::zero());
+    }
     let mut index_mod = 0;
     // 初始化
+    let new_page_table = PageTableWrapper::alloc();
+    new_page_table.change();
     for (i, app) in linker::AppMeta::locate().iter().enumerate() {
-        let entry = app.as_ptr() as usize;
+        println!("{:x}",app.as_ptr() as usize - VIRT_ADDR_START);
+        let entry = app.as_ptr() as usize - VIRT_ADDR_START;
+        for i in 0..0x20 {
+            new_page_table.map_page(
+                VirtPage::from_addr(entry + PAGE_SIZE * i),
+                PhysPage::from_addr(entry + PAGE_SIZE * i),
+                MappingFlags::URWX,
+                MappingSize::Page4KB,
+            );
+        }
+        println!("stack:{:x}",tcbs[i].stack.as_ptr() as usize);
+        new_page_table.map_page(
+            VirtPage::from_addr(tcbs[i].stack.as_ptr() as usize- VIRT_ADDR_START),
+            PhysPage::from_addr(tcbs[i].stack.as_ptr() as usize- VIRT_ADDR_START),
+            MappingFlags::URWX,
+            MappingSize::Page4KB,
+        );              
         log::info!("load app{i} to {entry:#x}");
         tcbs[i].init(entry);
         index_mod += 1;
     }
     println!();
-    // 打开中断
-    unsafe { sie::set_stimer() };
     // 多道执行
     let mut remain = index_mod;
     let mut i = 0usize;
@@ -50,18 +110,13 @@ extern "C" fn rust_main() -> ! {
         let tcb = &mut tcbs[i];
         if !tcb.finish {
             loop {
-                #[cfg(not(feature = "coop"))]
-                sbi_rt::set_timer(time::read64() + 12500);
-                unsafe { tcb.execute() };
-
-                use scause::*;
-                let finish = match scause::read().cause() {
-                    Trap::Interrupt(Interrupt::SupervisorTimer) => {
-                        sbi_rt::set_timer(u64::MAX);
+                let esr =  tcb.execute();
+                let finish = match esr {
+                    EscapeReason::Timer => {
                         log::trace!("app{i} timeout");
                         false
                     }
-                    Trap::Exception(Exception::UserEnvCall) => {
+                    EscapeReason::SysCall => {
                         use task::SchedulingEvent as Event;
                         match tcb.handle_syscall() {
                             Event::None => continue,
@@ -79,12 +134,12 @@ extern "C" fn rust_main() -> ! {
                             }
                         }
                     }
-                    Trap::Exception(e) => {
+                    EscapeReason::Exception(e) => {
                         log::error!("app{i} was killed by {e:?}");
                         true
                     }
-                    Trap::Interrupt(ir) => {
-                        log::error!("app{i} was killed by an unexpected interrupt {ir:?}");
+                    _ => {
+                        log::error!("app{i} was killed by an unexpected interrupt");
                         true
                     }
                 };
@@ -97,20 +152,19 @@ extern "C" fn rust_main() -> ! {
         }
         i = (i + 1) % index_mod;
     }
-    system_reset(Shutdown, NoReason);
-    unreachable!()
+    Instruction::shutdown();
 }
 
 /// Rust 异常处理函数，以异常方式关机。
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
     println!("{info}");
-    system_reset(Shutdown, SystemFailure);
-    loop {}
+    Instruction::shutdown();
 }
 
 /// 各种接口库的实现
 mod impls {
+    use polyhal::{debug_console::DebugConsole, Time};
     use syscall::*;
 
     pub struct Console;
@@ -119,7 +173,7 @@ mod impls {
         #[inline]
         fn put_char(&self, c: u8) {
             #[allow(deprecated)]
-            sbi_rt::legacy::console_putchar(c as _);
+            DebugConsole::putchar(c as _);
         }
     }
 
@@ -165,7 +219,7 @@ mod impls {
         fn clock_gettime(&self, _caller: syscall::Caller, clock_id: ClockId, tp: usize) -> isize {
             match clock_id {
                 ClockId::CLOCK_MONOTONIC => {
-                    let time = riscv::register::time::read() * 10000 / 125;
+                    let time = Time::now().to_usec();
                     *unsafe { &mut *(tp as *mut TimeSpec) } = TimeSpec {
                         tv_sec: time / 1_000_000_000,
                         tv_nsec: time % 1_000_000_000,

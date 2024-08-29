@@ -5,9 +5,8 @@ edition = "2021"
 authors = ["YdrMaster <ydrml@hotmail.com>"]
 
 [dependencies]
-sbi-rt = { version = "0.0.2", features = ["legacy"] }
+polyhal = {git = "https://github.com/xushanpu123/polyhal.git",features = ["kcontext", "trap", "boot"]}
 xmas-elf = "0.8.0"
-riscv = "0.10.1"
 
 linker = { path = "../linker" }
 rcore-console = { path = "../console" }

@@ -31,8 +31,6 @@ use xmas_elf::ElfFile;
 
 // 应用程序内联进来。
 core::arch::global_asm!(include_str!(env!("APP_ASM")));
-// 定义内核入口。
-linker::boot0!(rust_main; stack = 6 * 4096);
 // 物理内存容量 = 24 MiB。
 const MEMORY: usize = 24 << 20;
 // 传送门所在虚页。
@@ -40,23 +38,22 @@ const PROTAL_TRANSIT: VPN<Sv39> = VPN::MAX;
 // 进程列表。
 static mut PROCESSES: Vec<Process> = Vec::new();
 
+#[polyhal::arch_interrupt]
+fn kernel_interrupt(ctx: &mut TrapFrame, trap_type: TrapType) {
+    // log::info!("trap_type @ {:x?} ", trap_type);
+
+}
+
+//The entry point
+#[polyhal::arch_entry]
 extern "C" fn rust_main() -> ! {
-    let layout = linker::KernelLayout::locate();
-    // bss 段清零
-    unsafe { layout.zero_bss() };
     // 初始化 `console`
     rcore_console::init_console(&Console);
     rcore_console::set_log_level(option_env!("LOG"));
     rcore_console::test_log();
     // 初始化内核堆
-    kernel_alloc::init(layout.start() as _);
-    unsafe {
-        kernel_alloc::transfer(core::slice::from_raw_parts_mut(
-            layout.end() as _,
-            MEMORY - layout.len(),
-        ))
-    };
-    // 建立异界传送门
+    kernel_alloc::init_heap();
+     // 建立异界传送门
     let portal_size = MultislotPortal::calculate_size(1);
     let portal_layout = Layout::from_size_align(portal_size, 1 << Sv39::PAGE_BITS).unwrap();
     let portal_ptr = unsafe { alloc(portal_layout) };
