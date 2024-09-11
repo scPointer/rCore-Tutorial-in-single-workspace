@@ -10,7 +10,7 @@ xmas-elf = "0.8.0"
 
 linker = { path = "../linker" }
 rcore-console = { path = "../console" }
-kernel-context = { path = "../kernel-context", features = ["foreign"] }
+# kernel-context = { path = "../kernel-context", features = ["foreign"] }
 kernel-alloc = { path = "../kernel-alloc" }
 kernel-vm = { path = "../kernel-vm" }
 syscall = { path = "../syscall", features = ["kernel"] }

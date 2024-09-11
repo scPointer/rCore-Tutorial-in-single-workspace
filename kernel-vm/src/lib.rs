@@ -1,45 +1,26 @@
-//! 内核虚存管理。
-
+//! Memory management implementation
+//!
+//! SV39 page-based virtual-memory architecture for RV64 systems, and
+//! everything about memory management, like frame allocator, page table,
+//! map area and memory set, is implemented here.
+//!
+//! Every task or process has a memory_set to control its virtual memory.
 #![no_std]
-#![deny(warnings, missing_docs)]
+#![feature(alloc_error_handler)]
 
-mod space;
+#[macro_use]
+extern crate rcore_console;
+extern crate alloc;
 
-pub extern crate page_table;
-pub use space::AddressSpace;
+mod frame_allocator;
+// mod heap_allocator;
+mod memory_set;
+mod page_table;
+mod vpn_range;
+mod sync;
+mod config;
 
-use core::ptr::NonNull;
-use page_table::{Pte, VmFlags, VmMeta, PPN};
-
-/// 物理页管理。
-pub trait PageManager<Meta: VmMeta> {
-    /// 新建根页表页。
-    fn new_root() -> Self;
-
-    /// 获取根页表。
-    fn root_ptr(&self) -> NonNull<Pte<Meta>>;
-
-    /// 获取根页表的物理页号。
-    #[inline]
-    fn root_ppn(&self) -> PPN<Meta> {
-        self.v_to_p(self.root_ptr())
-    }
-
-    /// 计算当前地址空间上指向物理页的指针。
-    fn p_to_v<T>(&self, ppn: PPN<Meta>) -> NonNull<T>;
-
-    /// 计算当前地址空间上的指针指向的物理页。
-    fn v_to_p<T>(&self, ptr: NonNull<T>) -> PPN<Meta>;
-
-    /// 检查是否拥有一个页的所有权。
-    fn check_owned(&self, pte: Pte<Meta>) -> bool;
-
-    /// 为地址空间分配 `len` 个物理页。
-    fn allocate(&mut self, len: usize, flags: &mut VmFlags<Meta>) -> NonNull<u8>;
-
-    /// 从地址空间释放 `pte` 指示的 `len` 个物理页。
-    fn deallocate(&mut self, pte: Pte<Meta>, len: usize) -> usize;
-
-    /// 释放根页表。
-    fn drop_root(&mut self);
-}
+pub use memory_set::{MapPermission, MemorySet};
+pub use page_table::{translated_byte_buffer, translated_refmut, translated_str, translated_ref};
+// pub use heap_allocator::init_heap;
+pub use frame_allocator::{frame_alloc_page_with_clear, frame_dealloc, init_frame_allocator,frame_alloc, FrameTracker};

@@ -1,4 +1,6 @@
-﻿/// 应用程序元数据。
+﻿
+
+/// 应用程序元数据。
 #[repr(C)]
 pub struct AppMeta {
     base: u64,

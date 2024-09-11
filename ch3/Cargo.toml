@@ -13,7 +13,7 @@ kernel-alloc = { path = "../kernel-alloc" }
 lazy_static = { version = "1.4.0", features = ["spin_no_std"] }
 linker = { path = "../linker" }
 rcore-console = { path = "../console" }
-kernel-context = { path = "../kernel-context" }
+# kernel-context = { path = "../kernel-context" }
 syscall = { path = "../syscall", features = ["kernel"] }
 
 [build-dependencies]

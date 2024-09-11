@@ -30,7 +30,10 @@
 //! 用 [`KernelLayout`] 结构体定位、保存和访问内核内存布局。
 
 #![no_std]
-#![deny(warnings, missing_docs)]
+// #![deny(warnings, missing_docs)]
+
+#[macro_use]
+extern crate rcore_console;
 
 mod app;
 
