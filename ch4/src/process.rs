@@ -34,7 +34,7 @@ impl Process {
     pub fn new(elf: ElfFile) -> Option<Self> {
         // memory_set with elf program headers/trampoline/trap context/user stack
         let (memory_set, user_sp, entry_point) = MemorySet::from_elf(elf);
-        println!("entry_point:{}",entry_point);
+        println!("entry_point:{:#x}",entry_point);
         // alloc a kernel stack in kernel space
         let kstack = KernelStack::new();
         // push a task context which goes to trap_return to the top of kernel stack

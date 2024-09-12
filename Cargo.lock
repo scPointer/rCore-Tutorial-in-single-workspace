@@ -129,7 +129,7 @@ version = "0.0.1"
 dependencies = [
  "buddy_system_allocator",
  "log",
- "polyhal 0.1.3 (git+https://github.com/Byte-OS/polyhal.git)",
+ "polyhal 0.1.3 (git+https://github.com/xushanpu123/polyhal.git)",
 ]
 
 [[package]]
@@ -172,6 +172,7 @@ version = "0.0.1"
 dependencies = [
  "kernel-alloc",
  "kernel-vm",
+ "lazy_static",
  "linker",
  "polyhal 0.1.3 (git+https://github.com/xushanpu123/polyhal.git)",
  "rcore-console",

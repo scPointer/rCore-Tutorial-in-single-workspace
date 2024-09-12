@@ -15,19 +15,54 @@ OUTPUT_ARCH(riscv)
 ENTRY(_start)
 SECTIONS {{
     . = {base};
-    .text : {{
+    . = ALIGN(4K);
+    .text : ALIGN(4K) {{
         *(.text.entry)
         *(.text .text.*)
     }}
-    .rodata : {{
+    . = ALIGN(4K);
+    .rodata : ALIGN(4K) {{
         *(.rodata .rodata.*)
         *(.srodata .srodata.*)
     }}
-    .data : {{
+    . = ALIGN(4K);
+    .data : ALIGN(4K) {{
         *(.data .data.*)
         *(.sdata .sdata.*)
     }}
-    .bss : {{
+    . = ALIGN(4K);
+    .bss : ALIGN(4K) {{
+        *(.bss .bss.*)
+        *(.sbss .sbss.*)
+    }}
+}}"
+        );
+        let ld = PathBuf::from(env::var_os("OUT_DIR").unwrap()).join("linker.ld");
+        fs::write(&ld, text).unwrap();
+        println!("cargo:rustc-link-arg=-T{}", ld.display());
+    } else {
+        let text = format!(
+            "\
+OUTPUT_ARCH(riscv)
+ENTRY(_start)
+SECTIONS {{
+    . = ALIGN(4K);
+    .text : ALIGN(4K) {{
+        *(.text.entry)
+        *(.text .text.*)
+    }}
+    . = ALIGN(4K);
+    .rodata : ALIGN(4K) {{
+        *(.rodata .rodata.*)
+        *(.srodata .srodata.*)
+    }}
+    . = ALIGN(4K);
+    .data : ALIGN(4K) {{
+        *(.data .data.*)
+        *(.sdata .sdata.*)
+    }}
+    . = ALIGN(4K);
+    .bss : ALIGN(4K) {{
         *(.bss .bss.*)
         *(.sbss .sbss.*)
     }}

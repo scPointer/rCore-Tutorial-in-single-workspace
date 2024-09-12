@@ -2,7 +2,6 @@
 #![no_main]
 #![feature(naked_functions)]
 #![feature(alloc_error_handler)]
-#![feature(alloc_error_handler)]
 // #![deny(warnings)]
 
 #[macro_use]

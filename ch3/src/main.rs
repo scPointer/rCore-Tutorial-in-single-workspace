@@ -13,7 +13,7 @@ extern crate alloc;
 use frame_allocater::{frame_alloc_persist, frame_dealloc, init_frame_allocator};
 //use heap_allocator::init_heap;
 use impls::{Console, SyscallContext};
-use polyhal::{common::{get_mem_areas, PageAlloc}, consts::VIRT_ADDR_START, instruction::Instruction, pagetable::PAGE_SIZE, trap::{EscapeReason, TrapType}, trapframe::TrapFrame, MappingFlags, MappingSize, PageTableWrapper, PhysPage, VirtPage};
+use polyhal::{common::{get_mem_areas, PageAlloc}, consts::VIRT_ADDR_START, instruction::Instruction, pagetable::PAGE_SIZE, trap::{EscapeReason, TrapType}, trapframe::{TrapFrame, TrapFrameArgs}, MappingFlags, MappingSize, PageTableWrapper, PhysPage, VirtPage};
 use rcore_console::log::{self, info};
 use task::TaskControlBlock;
 use polyhal::time::Time;
@@ -45,7 +45,6 @@ core::arch::global_asm!(include_str!(env!("APP_ASM")));
 const APP_CAPACITY: usize = 32;
 #[polyhal::arch_interrupt]
 fn kernel_interrupt(ctx: &mut TrapFrame, trap_type: TrapType) {
-    // log::info!("trap_type @ {:x?} ", trap_type);
 
 }
 //The entry point
@@ -220,9 +219,10 @@ mod impls {
             match clock_id {
                 ClockId::CLOCK_MONOTONIC => {
                     let time = Time::now().to_usec();
+                    println!("time is {}",time);
                     *unsafe { &mut *(tp as *mut TimeSpec) } = TimeSpec {
-                        tv_sec: time / 1_000_000_000,
-                        tv_nsec: time % 1_000_000_000,
+                        tv_sec: time / 1_000_000,
+                        tv_nsec: time % 1_000_000,
                     };
                     0
                 }

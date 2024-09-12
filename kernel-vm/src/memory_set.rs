@@ -96,7 +96,7 @@ impl MemorySet {
         let max_end_va: VirtAddr = max_end_vpn.into();
         let mut user_stack_bottom: usize = max_end_va.into();
         // guard page
-        user_stack_bottom += 100*PAGE_SIZE;
+        user_stack_bottom += PAGE_SIZE;
         let user_stack_top = user_stack_bottom + USER_STACK_SIZE;
         println!("user stack:{}",user_stack_top);
         memory_set.push(
@@ -185,7 +185,6 @@ impl MapArea {
             // self.map_one(page_table, vpn);
             let p_tracker = frame_alloc().expect("can't allocate frame");
             let flags = self.map_perm.into();
-            log::info!("map page: {:#x?} -> {:#x?} {:?}  root: {:?}", vpn, p_tracker.ppn, flags, page_table);
             page_table.map_page(vpn, p_tracker.ppn, flags, MappingSize::Page4KB);
             self.data_frames.insert(vpn, p_tracker);
         }

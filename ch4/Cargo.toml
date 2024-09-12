@@ -14,6 +14,7 @@ rcore-console = { path = "../console" }
 kernel-alloc = { path = "../kernel-alloc" }
 kernel-vm = { path = "../kernel-vm" }
 syscall = { path = "../syscall", features = ["kernel"] }
+lazy_static = { version = "1.4.0", features = ["spin_no_std"] }
 
 [build-dependencies]
 linker = { path = "../linker" }
