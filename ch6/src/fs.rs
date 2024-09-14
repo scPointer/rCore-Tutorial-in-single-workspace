@@ -1,6 +1,7 @@
 use crate::virtio_block::BLOCK_DEVICE;
 use alloc::{string::String, sync::Arc, vec::Vec};
 use easy_fs::{EasyFileSystem, FSManager, FileHandle, Inode, OpenFlags};
+use rcore_console::log::info;
 use spin::Lazy;
 
 pub static FS: Lazy<FileSystem> = Lazy::new(|| FileSystem {
@@ -53,6 +54,7 @@ impl FSManager for FileSystem {
 }
 
 pub fn read_all(fd: Arc<FileHandle>) -> Vec<u8> {
+    println!("111");
     let mut offset = 0usize;
     let mut buffer = [0u8; 512];
     let mut v: Vec<u8> = Vec::new();

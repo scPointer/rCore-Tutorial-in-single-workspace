@@ -1,20 +1,23 @@
-use crate::KERNEL_SPACE;
 use alloc::{
     alloc::{alloc_zeroed, dealloc},
     sync::Arc,
 };
+use polyhal::consts::VIRT_ADDR_START;
 use core::{alloc::Layout, ptr::NonNull};
 use easy_fs::BlockDevice;
-use kernel_vm::page_table::{MmuMeta, Sv39, VAddr, VmFlags};
 use spin::{Lazy, Mutex};
 use virtio_drivers::{Hal, VirtIOBlk, VirtIOHeader};
 
-const VIRTIO0: usize = 0x10001000;
+const VIRTIO0: usize = VIRT_ADDR_START + 0x10001000;
 
 pub static BLOCK_DEVICE: Lazy<Arc<dyn BlockDevice>> = Lazy::new(|| {
     Arc::new(unsafe {
         VirtIOBlock(Mutex::new(
-            VirtIOBlk::new(&mut *(VIRTIO0 as *mut VirtIOHeader)).unwrap(),
+            {
+            let v = VirtIOBlk::new(&mut *(VIRTIO0 as *mut VirtIOHeader)).unwrap();
+            println!("create succes");
+            v
+            }
         ))
     })
 });
@@ -41,39 +44,32 @@ struct VirtioHal;
 impl Hal for VirtioHal {
     fn dma_alloc(pages: usize) -> usize {
         // warn!("dma_alloc");
-        unsafe {
+        let paddr: usize = unsafe {
             alloc_zeroed(Layout::from_size_align_unchecked(
-                pages << Sv39::PAGE_BITS,
-                1 << Sv39::PAGE_BITS,
+                pages << 12,
+                1 << 12,
             )) as _
-        }
+        };
+        paddr - VIRT_ADDR_START
     }
 
     fn dma_dealloc(paddr: usize, pages: usize) -> i32 {
         // warn!("dma_dealloc");
         unsafe {
             dealloc(
-                paddr as _,
-                Layout::from_size_align_unchecked(pages << Sv39::PAGE_BITS, 1 << Sv39::PAGE_BITS),
+                (paddr - VIRT_ADDR_START) as _,
+                Layout::from_size_align_unchecked(pages << 12, 1 << 12),
             )
         }
         0
     }
 
     fn phys_to_virt(paddr: usize) -> usize {
-        // warn!("p2v");
-        paddr
+        log::warn!("p2v paddr: {:#x}", paddr);
+        paddr + VIRT_ADDR_START
     }
 
     fn virt_to_phys(vaddr: usize) -> usize {
-        // warn!("v2p");
-        const VALID: VmFlags<Sv39> = VmFlags::build_from_str("__V");
-        let ptr: NonNull<u8> = unsafe {
-            KERNEL_SPACE
-                .assume_init_ref()
-                .translate(VAddr::new(vaddr), VALID)
-                .unwrap()
-        };
-        ptr.as_ptr() as usize
+        vaddr - VIRT_ADDR_START
     }
 }

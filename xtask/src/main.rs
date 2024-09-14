@@ -169,11 +169,7 @@ impl QemuArgs {
                 format!(
                     "file={},if=none,format=raw,id=x0",
                     TARGET
-                        .join(if self.build.release {
-                            "release"
-                        } else {
-                            "debug"
-                        })
+                        .join("debug")
                         .join("fs.img")
                         .into_os_string()
                         .into_string()
