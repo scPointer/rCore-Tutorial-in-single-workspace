@@ -30,7 +30,9 @@ pub fn main() -> i32 {
                     let pid = fork();
                     if pid == 0 {
                         // child process
+                        line.push('\0');
                         if exec(line.as_str()) == -1 {
+                            println!("app name is {}",line.as_str());
                             println!("Error when executing!");
                             return -4;
                         }

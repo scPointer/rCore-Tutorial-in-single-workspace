@@ -6,4 +6,6 @@ pub trait Manage<T, I: Copy + Ord> {
     fn delete(&mut self, id: I);
     /// 获取 mut item
     fn get_mut(&mut self, id: I) -> Option<&mut T>;
+    /// 获取 current item
+    fn current(&mut self) -> Option<&mut T>;
 }

@@ -30,6 +30,11 @@ impl<P, MP: Manage<P, ProcId> + Schedule<ProcId>> PManager<P, MP> {
             phantom_data: PhantomData::<P>,
         }
     }
+
+    /// 找到current进程
+    pub fn get_current(&mut self) -> Option<&mut P> {
+         self.current()   
+    }
     /// 找到下一个进程
     pub fn find_next(&mut self) -> Option<&mut P> {
         if let Some(id) = self.manager.as_mut().unwrap().fetch() {

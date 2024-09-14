@@ -10,28 +10,22 @@ pub mod process;
 extern crate rcore_console;
 
 extern crate alloc;
-use core::cell::{RefCell, RefMut};
-use core::mem::size_of;
-use polyhal::trap::TrapType::*;
 
 use crate::{impls::SyscallContext, process::Process};
-use alloc::{alloc::alloc, sync::Arc, vec::Vec};
+use alloc::vec::Vec;
 use impls::Console;
 use kernel_vm::{frame_alloc_page_with_clear, frame_dealloc, init_frame_allocator, MemorySet};
 use polyhal::{
     common::{get_mem_areas, PageAlloc},
-    consts::VIRT_ADDR_START,
     instruction::Instruction,
     kcontext::*,
     trap::{run_user_task, EscapeReason, TrapType},
     trapframe::{TrapFrame, TrapFrameArgs},
     PhysPage,
 };
-use process::KERNEL_STACK_SIZE;
 use rcore_console::log::{self, info};
 use syscall::{Caller, Scheduling};
 use xmas_elf::ElfFile;
-use lazy_static::lazy_static;
 
 // 应用程序内联进来。
 core::arch::global_asm!(include_str!(env!("APP_ASM")));
@@ -277,7 +271,6 @@ mod impls {
             match clock_id {
                 ClockId::CLOCK_MONOTONIC => {
                     let time = Time::now().to_usec();
-                    println!("time is {}",time);
                     *unsafe { &mut *(tp as *mut TimeSpec) } = TimeSpec {
                         tv_sec: time / 1_000_000,
                         tv_nsec: time % 1_000_000,

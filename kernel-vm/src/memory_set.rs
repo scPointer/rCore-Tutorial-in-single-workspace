@@ -180,7 +180,7 @@ impl MapArea {
         }
     }
     pub fn map(&mut self, page_table: &Arc<PageTableWrapper>) {
-        trace!("os::mm::memory_set::MapArea::map");
+        // trace!("os::mm::memory_set::MapArea::map");
         for vpn in self.vpn_range {
             // self.map_one(page_table, vpn);
             let p_tracker = frame_alloc().expect("can't allocate frame");
@@ -191,7 +191,7 @@ impl MapArea {
     }
     #[allow(unused)]
     pub fn unmap(&mut self, page_table: &Arc<PageTableWrapper>) {
-        trace!("os::mm::memory_set::MapArea::unmap");
+        // trace!("os::mm::memory_set::MapArea::unmap");
         for vpn in self.vpn_range {
             page_table.unmap_page(vpn);
         }
@@ -200,7 +200,7 @@ impl MapArea {
     /// data: start-aligned but maybe with shorter length
     /// assume that all frames were cleared before
     pub fn copy_data(&mut self, page_table: &Arc<PageTableWrapper>, data: &[u8]) {
-        trace!("os::mm::memory_set::MapArea::copy_data");
+        // trace!("os::mm::memory_set::MapArea::copy_data");
         assert_eq!(self.map_type, MapType::Framed);
         let mut start: usize = 0;
         let mut current_vpn = self.vpn_range.get_start();
