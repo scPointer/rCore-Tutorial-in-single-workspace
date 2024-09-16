@@ -1,13 +1,12 @@
-use crate::{map_portal, Sv39Manager, PROCESSOR};
+use crate::PROCESSOR;
 use alloc::sync::Arc;
 use alloc::{alloc::alloc_zeroed, boxed::Box, vec::Vec};
+use kernel_vm::MemorySet;
+use polyhal::kcontext::{read_current_tp, KContext, KContextArgs};
+use polyhal::trapframe::{TrapFrame, TrapFrameArgs};
+use core::mem::size_of;
 use core::{alloc::Layout, str::FromStr};
 use easy_fs::FileHandle;
-use kernel_context::{foreign::ForeignContext, LocalContext};
-use kernel_vm::{
-    page_table::{MmuMeta, Sv39, VAddr, VmFlags, PPN, VPN},
-    AddressSpace,
-};
 use rcore_task_manage::{ProcId, ThreadId};
 use signal::Signal;
 use signal_impl::SignalImpl;
@@ -18,19 +17,46 @@ use xmas_elf::{
     program, ElfFile,
 };
 
+pub const KERNEL_STACK_SIZE: usize = 4096 * 0x10;
+pub struct KernelStack {
+    inner: Arc<[u128; KERNEL_STACK_SIZE / size_of::<u128>()]>,
+}
+
+impl KernelStack {
+    pub fn new() -> Self {
+        Self {
+            inner: Arc::new([0u128; KERNEL_STACK_SIZE / size_of::<u128>()]),
+        }
+    }
+
+    pub fn get_position(&self) -> (usize, usize) {
+        let bottom = self.inner.as_ptr() as usize;
+        (bottom, bottom + KERNEL_STACK_SIZE)
+    }
+}
 /// 线程
 pub struct Thread {
     /// 不可变
     pub tid: ThreadId,
+    pub ppid:ProcId,
     /// 可变
-    pub context: ForeignContext,
+    /// 可变
+    pub trap_cx: TrapFrame,
+    pub task_cx: KContext,
 }
 
 impl Thread {
-    pub fn new(satp: usize, context: LocalContext) -> Self {
+    pub fn new(ppid: ProcId, context: TrapFrame) -> Self {
         Self {
             tid: ThreadId::new(),
-            context: ForeignContext { context, satp },
+            ppid,
+            trap_cx:context,
+            task_cx:{
+                let mut context = KContext::blank();
+                context[KContextArgs::KSP] = KernelStack::new().get_position().1;
+                context[KContextArgs::KTP] = read_current_tp();
+                context
+            },
         }
     }
 }
@@ -40,11 +66,12 @@ pub struct Process {
     /// 不可变
     pub pid: ProcId,
     /// 可变
-    pub address_space: AddressSpace<Sv39, Sv39Manager>,
+    pub memory_set: MemorySet,
     /// 文件描述符表
     pub fd_table: Vec<Option<Mutex<FileHandle>>>,
     /// 信号模块
     pub signal: Box<dyn Signal>,
+    pub usr_stack:usize,
     /// 分配的锁以及信号量
     pub semaphore_list: Vec<Option<Arc<Semaphore>>>,
     pub mutex_list: Vec<Option<Arc<dyn MutexTrait>>>,
@@ -54,11 +81,18 @@ pub struct Process {
 impl Process {
     /// 只支持一个线程
     pub fn exec(&mut self, elf: ElfFile) {
+        println!("ppp");
         let (proc, thread) = Process::from_elf(elf).unwrap();
-        self.address_space = proc.address_space;
+        println!("qqq");
+        self.memory_set = proc.memory_set;
+        self.usr_stack = proc.usr_stack;
         unsafe {
             let pthreads = PROCESSOR.get_thread(self.pid).unwrap();
-            PROCESSOR.get_task(pthreads[0]).unwrap().context = thread.context;
+            PROCESSOR.get_task(pthreads[0]).unwrap().task_cx = thread.task_cx;
+            PROCESSOR.get_task(pthreads[0]).unwrap().trap_cx = thread.trap_cx;
+            PROCESSOR.get_task(pthreads[0]).unwrap().ppid = thread.ppid;
+            PROCESSOR.get_task(pthreads[0]).unwrap().tid = thread.tid;
+
         }
     }
     /// 只支持一个线程
@@ -66,22 +100,18 @@ impl Process {
         // 子进程 pid
         let pid = ProcId::new();
         // 复制父进程地址空间
-        let parent_addr_space = &self.address_space;
-        let mut address_space: AddressSpace<Sv39, Sv39Manager> = AddressSpace::new();
-        parent_addr_space.cloneself(&mut address_space);
-        map_portal(&address_space);
+        let parent_addr_space = &self.memory_set;
+        let mut address_space = MemorySet::from_existed_user(parent_addr_space);
         // 线程
         let pthreads = unsafe { PROCESSOR.get_thread(self.pid).unwrap() };
         let context = unsafe {
             PROCESSOR
                 .get_task(pthreads[0])
                 .unwrap()
-                .context
-                .context
+                .trap_cx
                 .clone()
         };
-        let satp = (8 << 60) | address_space.root_ppn().val();
-        let thread = Thread::new(satp, context);
+        let thread: Thread = Thread::new(pid, context);
         // 复制父进程文件符描述表
         let mut new_fd_table: Vec<Option<Mutex<FileHandle>>> = Vec::new();
         for fd in self.fd_table.iter_mut() {
@@ -91,10 +121,12 @@ impl Process {
                 new_fd_table.push(None);
             }
         }
-        Some((
+        println!("3335");
+        let res =(
             Self {
                 pid,
-                address_space,
+                memory_set:address_space,
+                usr_stack:self.usr_stack,
                 fd_table: new_fd_table,
                 signal: self.signal.from_fork(),
                 semaphore_list: Vec::new(),
@@ -102,87 +134,36 @@ impl Process {
                 condvar_list: Vec::new(),
             },
             thread,
-        ))
+        );
+        println!("777");
+        Some(res)
+        // None
     }
 
     pub fn from_elf(elf: ElfFile) -> Option<(Self, Thread)> {
-        let entry = match elf.header.pt2 {
-            HeaderPt2::Header64(pt2)
-                if pt2.type_.as_type() == header::Type::Executable
-                    && pt2.machine.as_machine() == Machine::RISC_V =>
-            {
-                pt2.entry_point as usize
-            }
-            _ => None?,
+        let (memory_set, user_sp, entry_point) = MemorySet::from_elf(elf);    
+        let kstack = KernelStack::new();
+        // push a task context which goes to trap_return to the top of kernel stack
+        let mut process = Self {
+            pid:ProcId::new(),
+            memory_set,
+            fd_table:vec![
+                // Stdin
+                Some(Mutex::new(FileHandle::empty(true, false))),
+                // Stdout
+                Some(Mutex::new(FileHandle::empty(false, true))),
+            ],
+            usr_stack:user_sp,
+            signal: Box::new(SignalImpl::new()),
+            semaphore_list: Vec::new(),
+            mutex_list: Vec::new(),
+            condvar_list: Vec::new(),
         };
+        let mut ctx = TrapFrame::new();
+        ctx[TrapFrameArgs::SEPC]=entry_point;
 
-        const PAGE_SIZE: usize = 1 << Sv39::PAGE_BITS;
-        const PAGE_MASK: usize = PAGE_SIZE - 1;
-
-        let mut address_space = AddressSpace::new();
-        for program in elf.program_iter() {
-            if !matches!(program.get_type(), Ok(program::Type::Load)) {
-                continue;
-            }
-
-            let off_file = program.offset() as usize;
-            let len_file = program.file_size() as usize;
-            let off_mem = program.virtual_addr() as usize;
-            let end_mem = off_mem + program.mem_size() as usize;
-            assert_eq!(off_file & PAGE_MASK, off_mem & PAGE_MASK);
-
-            let mut flags: [u8; 5] = *b"U___V";
-            if program.flags().is_execute() {
-                flags[1] = b'X';
-            }
-            if program.flags().is_write() {
-                flags[2] = b'W';
-            }
-            if program.flags().is_read() {
-                flags[3] = b'R';
-            }
-            address_space.map(
-                VAddr::new(off_mem).floor()..VAddr::new(end_mem).ceil(),
-                &elf.input[off_file..][..len_file],
-                off_mem & PAGE_MASK,
-                VmFlags::from_str(unsafe { core::str::from_utf8_unchecked(&flags) }).unwrap(),
-            );
-        }
-        // 映射用户栈
-        let stack = unsafe {
-            alloc_zeroed(Layout::from_size_align_unchecked(
-                2 << Sv39::PAGE_BITS,
-                1 << Sv39::PAGE_BITS,
-            ))
-        };
-        address_space.map_extern(
-            VPN::new((1 << 26) - 2)..VPN::new(1 << 26),
-            PPN::new(stack as usize >> Sv39::PAGE_BITS),
-            VmFlags::build_from_str("U_WRV"),
-        );
-        // 映射异界传送门
-        map_portal(&address_space);
-        let satp = (8 << 60) | address_space.root_ppn().val();
-        let mut context = LocalContext::user(entry);
-        *context.sp_mut() = 1 << 38;
-        let thread = Thread::new(satp, context);
-
-        Some((
-            Self {
-                pid: ProcId::new(),
-                address_space,
-                fd_table: vec![
-                    // Stdin
-                    Some(Mutex::new(FileHandle::empty(true, false))),
-                    // Stdout
-                    Some(Mutex::new(FileHandle::empty(false, true))),
-                ],
-                signal: Box::new(SignalImpl::new()),
-                semaphore_list: Vec::new(),
-                mutex_list: Vec::new(),
-                condvar_list: Vec::new(),
-            },
-            thread,
-        ))
+        ctx[TrapFrameArgs::SP]=user_sp;
+        let mut thread = Thread::new(process.pid, ctx);
+        Some((process,thread))
     }
 }

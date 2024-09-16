@@ -2,7 +2,7 @@
 #![no_main]
 #![feature(naked_functions)]
 //#![feature(default_alloc_error_handler)]
-#![deny(warnings)]
+// #![deny(warnings)]
 
 mod fs;
 mod process;
@@ -17,7 +17,7 @@ extern crate alloc;
 
 use crate::{
     fs::{read_all, FS},
-    impls::{Sv39Manager, SyscallContext},
+    impls::SyscallContext,
     process::{Process, Thread},
     processor::{ProcManager, ThreadManager},
 };
@@ -25,55 +25,69 @@ use alloc::alloc::alloc;
 use core::{alloc::Layout, mem::MaybeUninit};
 use easy_fs::{FSManager, OpenFlags};
 use impls::Console;
-use kernel_context::foreign::MultislotPortal;
-use kernel_vm::{
-    page_table::{MmuMeta, Sv39, VAddr, VmFlags, VmMeta, PPN, VPN},
-    AddressSpace,
+use kernel_vm::{frame_alloc_page_with_clear, frame_dealloc, init_frame_allocator};
+use polyhal::{
+    common::{get_mem_areas, PageAlloc},
+    instruction::Instruction,
+    kcontext::{context_switch, context_switch_pt, KContext, KContextArgs},
+    trap::{run_user_task, EscapeReason, TrapType},
+    trapframe::{TrapFrame, TrapFrameArgs},
+    PhysPage,
 };
 pub use processor::PROCESSOR;
-use rcore_console::log;
-use rcore_task_manage::ProcId;
-use riscv::register::*;
-use sbi_rt::*;
+use rcore_console::log::{self, info};
+use rcore_task_manage::{ProcId, Schedule};
 use signal::SignalResult;
 use syscall::Caller;
 use xmas_elf::ElfFile;
+static mut esr: EscapeReason = EscapeReason::NoReason;
 
-// 定义内核入口。
-linker::boot0!(rust_main; stack = 32 * 4096);
-// 物理内存容量 = 48 MiB。
-const MEMORY: usize = 48 << 20;
-// 传送门所在虚页。
-const PROTAL_TRANSIT: VPN<Sv39> = VPN::MAX;
-// 内核地址空间。
-static mut KERNEL_SPACE: MaybeUninit<AddressSpace<Sv39, Sv39Manager>> = MaybeUninit::uninit();
+pub struct PageAllocImpl;
 
+impl PageAlloc for PageAllocImpl {
+    #[inline]
+    fn alloc(&self) -> PhysPage {
+        frame_alloc_page_with_clear().expect("failed to alloc page")
+    }
+
+    #[inline]
+    fn dealloc(&self, ppn: PhysPage) {
+        frame_dealloc(ppn)
+    }
+}
+
+#[polyhal::arch_interrupt]
+fn kernel_interrupt(ctx: &mut TrapFrame, trap_type: TrapType) {
+    // match trap_type {
+    //     TrapType::StorePageFault(_paddr) => {
+    //         log::info!("paddr={:x}", _paddr);
+    //     }
+    //     TrapType::SysCall=> {
+    //         if ctx[TrapFrameArgs::SYSCALL] == 64{
+    //             println!("syscall");
+    //         }
+    //     }
+    //     _=>{}
+    // }
+}
+
+//The entry point
+#[polyhal::arch_entry]
 extern "C" fn rust_main() -> ! {
-    let layout = linker::KernelLayout::locate();
-    // bss 段清零
-    unsafe { layout.zero_bss() };
     // 初始化 `console`
     rcore_console::init_console(&Console);
     rcore_console::set_log_level(option_env!("LOG"));
     rcore_console::test_log();
-    // 初始化内核堆
-    kernel_alloc::init(layout.start() as _);
-    unsafe {
-        kernel_alloc::transfer(core::slice::from_raw_parts_mut(
-            layout.end() as _,
-            MEMORY - layout.len(),
-        ))
-    };
-    // 建立异界传送门
-    let portal_size = MultislotPortal::calculate_size(1);
-    let portal_layout = Layout::from_size_align(portal_size, 1 << Sv39::PAGE_BITS).unwrap();
-    let portal_ptr = unsafe { alloc(portal_layout) };
-    assert!(portal_layout.size() < 1 << Sv39::PAGE_BITS);
-    // 建立内核地址空间
-    kernel_space(layout, MEMORY, portal_ptr as _);
-    // 初始化异界传送门
-    let portal = unsafe { MultislotPortal::init_transit(PROTAL_TRANSIT.base().val(), 1) };
-    // 初始化 syscall
+    kernel_alloc::init_heap();
+    polyhal::common::init(&PageAllocImpl);
+    get_mem_areas().into_iter().for_each(|(start, size)| {
+        info!(
+            "frame alloocator add frame {:#x} - {:#x}",
+            start,
+            start + size
+        );
+        init_frame_allocator(start, start + size);
+    });
     syscall::init_io(&SyscallContext);
     syscall::init_process(&SyscallContext);
     syscall::init_scheduling(&SyscallContext);
@@ -91,149 +105,129 @@ extern "C" fn rust_main() -> ! {
             PROCESSOR.add(tid, thread, pid);
         }
     }
+    schedule()
+}
+
+pub fn schedule() -> ! {
     loop {
         if let Some(task) = unsafe { PROCESSOR.find_next() } {
-            unsafe { task.context.execute(portal, ()) };
-            match scause::read().cause() {
-                scause::Trap::Exception(scause::Exception::UserEnvCall) => {
-                    use syscall::{SyscallId as Id, SyscallResult as Ret};
-                    let ctx = &mut task.context.context;
-                    ctx.move_next();
-                    let id: Id = ctx.a(7).into();
-                    let args = [ctx.a(0), ctx.a(1), ctx.a(2), ctx.a(3), ctx.a(4), ctx.a(5)];
-                    let syscall_ret = syscall::handle(Caller { entity: 0, flow: 0 }, id, args);
-                    // 目前信号处理位置放在 syscall 执行之后，这只是临时的实现。
-                    // 正确处理信号的位置应该是在 “trap 中处理异常和中断和异常之后，返回用户态之前”。
-                    // 例如发现有访存异常时，应该触发 SIGSEGV 信号然后进行处理。
-                    // 但目前 syscall 之后直接切换用户程序，没有 “返回用户态” 这一步，甚至 trap 本身也没了。
-                    //
-                    // 最简单粗暴的方法是，在 `scause::Trap` 分类的每一条分支之后都加上信号处理，
-                    // 当然这样可能代码上不够优雅。处理信号的具体时机还需要后续再讨论。
-                    let current_proc = unsafe { PROCESSOR.get_current_proc().unwrap() };
-                    match current_proc.signal.handle_signals(ctx) {
-                        // 进程应该结束执行
-                        SignalResult::ProcessKilled(exit_code) => unsafe {
-                            PROCESSOR.make_current_exited(exit_code as _)
-                        },
-                        _ => match syscall_ret {
-                            Ret::Done(ret) => match id {
-                                Id::EXIT => unsafe { PROCESSOR.make_current_exited(ret) },
-                                Id::SEMAPHORE_DOWN | Id::MUTEX_LOCK | Id::CONDVAR_WAIT => {
-                                    if ret == -1 {
-                                        unsafe { PROCESSOR.make_current_blocked() };
-                                    } else {
-                                        unsafe { PROCESSOR.make_current_suspend() };
-                                    }
-                                }
-                                _ => {
-                                    let ctx = &mut task.context.context;
-                                    *ctx.a_mut(0) = ret as _;
-                                    unsafe { PROCESSOR.make_current_suspend() };
-                                }
-                            },
-                            Ret::Unsupported(_) => {
-                                log::info!("id = {id:?}");
-                                unsafe { PROCESSOR.make_current_exited(-2) };
-                            }
-                        },
-                    }
-                }
-                e => {
-                    log::error!("unsupported trap: {e:?}");
-                    unsafe { PROCESSOR.make_current_exited(-3) };
-                }
+            let mut _unused = KContext::blank();
+            // log::info!("change pagetable: {:?}", new_pagetable);
+            unsafe {
+                task.task_cx[KContextArgs::KPC] = task_entry as usize;
+                // let mut scheduler = &mut *SCHEDULER;
+                let new_pagetable = PROCESSOR.get_proc(task.ppid).unwrap().memory_set.token();
+                context_switch_pt(
+                    &mut _unused as *mut KContext,
+                    &mut task.task_cx,
+                    new_pagetable,
+                );
             }
         } else {
             println!("no task");
             break;
         }
     }
+    Instruction::shutdown();
+}
 
-    system_reset(Shutdown, NoReason);
-    unreachable!()
+pub fn task_entry() {
+    loop{
+    let task = unsafe { PROCESSOR.current().unwrap() };
+    log::info!("reschedule tid: {:?}", task.tid);
+    unsafe {
+        esr = run_user_task(&mut task.trap_cx);
+    }
+    match unsafe { esr } {
+        EscapeReason::SysCall => {
+            use syscall::{SyscallId as Id, SyscallResult as Ret};
+            let ctx = &mut task.trap_cx;
+            ctx[TrapFrameArgs::SEPC] += 4;
+            let id: Id = ctx[TrapFrameArgs::SYSCALL].into();
+            println!("{:?}", id);
+            let args = ctx.args();
+            let syscall_ret = syscall::handle(Caller { entity: 0, flow: 0 }, id, args);
+            // 目前信号处理位置放在 syscall 执行之后，这只是临时的实现。
+            // 正确处理信号的位置应该是在 “trap 中处理异常和中断和异常之后，返回用户态之前”。
+            // 例如发现有访存异常时，应该触发 SIGSEGV 信号然后进行处理。
+            // 但目前 syscall 之后直接切换用户程序，没有 “返回用户态” 这一步，甚至 trap 本身也没了。
+            //
+            // 最简单粗暴的方法是TrapFrameArgsTrapFrameArgs，在 `scause::Trap` 分类的每一条分支之后都加上信号处理，
+            // 当然这样可能代码上不够优雅。处理信号的具体时机还需要后续再讨论。
+            let current_proc = unsafe { PROCESSOR.get_current_proc().unwrap() };
+            match current_proc.signal.handle_signals(ctx) {
+                // 进程应该结束执行
+                SignalResult::ProcessKilled(exit_code) => unsafe {
+                    PROCESSOR.make_current_exited(exit_code as _)
+                },
+                _ => match syscall_ret {
+                    Ret::Done(ret) => match id {
+                        Id::EXIT => unsafe { PROCESSOR.make_current_exited(ret) },
+                        Id::SEMAPHORE_DOWN | Id::MUTEX_LOCK | Id::CONDVAR_WAIT => {
+                            if ret == -1 {
+                                unsafe { PROCESSOR.make_current_blocked() };
+                            } else {
+                                unsafe { PROCESSOR.make_current_suspend() };
+                            }
+                        }
+                        _ => {
+                            let ctx = &mut task.trap_cx;
+                            ctx[TrapFrameArgs::ARG0] = ret as _;
+                            unsafe { PROCESSOR.make_current_suspend() };
+                        }
+                    },
+                    Ret::Unsupported(_) => {
+                        log::info!("id = {id:?}");
+                        unsafe { PROCESSOR.make_current_exited(-2) };
+                    }
+                },
+            }
+        }
+        EscapeReason::Timer => {
+            unsafe { PROCESSOR.make_current_suspend() };
+        }
+        e => {
+            log::error!("unsupported trap: {e:?}");
+            unsafe { PROCESSOR.make_current_exited(-3) };
+        }
+    }
+    log::info!("schedule tid: {:?}", task.tid);
+    schedule();
+}
 }
 
 /// Rust 异常处理函数，以异常方式关机。
 #[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
     println!("{info}");
-    system_reset(Shutdown, SystemFailure);
-    loop {}
-}
-
-pub const MMIO: &[(usize, usize)] = &[
-    (0x1000_1000, 0x00_1000), // Virtio Block in virt machine
-];
-
-fn kernel_space(layout: linker::KernelLayout, memory: usize, portal: usize) {
-    let mut space = AddressSpace::new();
-    for region in layout.iter() {
-        log::info!("{region}");
-        use linker::KernelRegionTitle::*;
-        let flags = match region.title {
-            Text => "X_RV",
-            Rodata => "__RV",
-            Data | Boot => "_WRV",
-        };
-        let s = VAddr::<Sv39>::new(region.range.start);
-        let e = VAddr::<Sv39>::new(region.range.end);
-        space.map_extern(
-            s.floor()..e.ceil(),
-            PPN::new(s.floor().val()),
-            VmFlags::build_from_str(flags),
-        )
-    }
-    let s = VAddr::<Sv39>::new(layout.end());
-    let e = VAddr::<Sv39>::new(layout.start() + memory);
-    log::info!("(heap) ---> {:#10x}..{:#10x}", s.val(), e.val());
-    space.map_extern(
-        s.floor()..e.ceil(),
-        PPN::new(s.floor().val()),
-        VmFlags::build_from_str("_WRV"),
-    );
-    space.map_extern(
-        PROTAL_TRANSIT..PROTAL_TRANSIT + 1,
-        PPN::new(portal >> Sv39::PAGE_BITS),
-        VmFlags::build_from_str("__G_XWRV"),
-    );
-    println!();
-
-    // MMIO
-    for (base, len) in MMIO {
-        let s = VAddr::<Sv39>::new(*base);
-        let e = VAddr::<Sv39>::new(*base + *len);
-        log::info!("MMIO range -> {:#10x}..{:#10x}", s.val(), e.val());
-        space.map_extern(
-            s.floor()..e.ceil(),
-            PPN::new(s.floor().val()),
-            VmFlags::build_from_str("_WRV"),
-        );
-    }
-
-    unsafe { satp::set(satp::Mode::Sv39, 0, space.root_ppn().val()) };
-    unsafe { KERNEL_SPACE = MaybeUninit::new(space) };
-}
-
-/// 映射异界传送门。
-fn map_portal(space: &AddressSpace<Sv39, Sv39Manager>) {
-    let portal_idx = PROTAL_TRANSIT.index_in(Sv39::MAX_LEVEL);
-    space.root()[portal_idx] = unsafe { KERNEL_SPACE.assume_init_ref() }.root()[portal_idx];
+    Instruction::shutdown();
 }
 
 /// 各种接口库的实现。
 mod impls {
+    unsafe fn str_len(ptr: *const u8) -> usize {
+        let mut i = 0;
+        loop {
+            if *ptr.add(i) == 0 {
+                break i;
+            }
+            i += 1;
+        }
+    }
+
     use crate::{
         fs::{read_all, FS},
         Thread, PROCESSOR,
     };
     use alloc::sync::Arc;
     use alloc::{alloc::alloc_zeroed, string::String, vec::Vec};
-    use core::{alloc::Layout, ptr::NonNull};
+    use core::{alloc::Layout, ptr::NonNull, slice, str::from_utf8_unchecked};
     use easy_fs::UserBuffer;
     use easy_fs::{FSManager, OpenFlags};
-    use kernel_vm::{
-        page_table::{MmuMeta, Pte, Sv39, VAddr, VmFlags, VmMeta, PPN, VPN},
-        PageManager,
+    use polyhal::{
+        debug_console::DebugConsole,
+        trapframe::{TrapFrame, TrapFrameArgs},
+        Time,
     };
     use rcore_console::log;
     use rcore_task_manage::{ProcId, ThreadId};
@@ -243,145 +237,71 @@ mod impls {
     use syscall::*;
     use xmas_elf::ElfFile;
 
-    #[repr(transparent)]
-    pub struct Sv39Manager(NonNull<Pte<Sv39>>);
-
-    impl Sv39Manager {
-        const OWNED: VmFlags<Sv39> = unsafe { VmFlags::from_raw(1 << 8) };
-
-        #[inline]
-        fn page_alloc<T>(count: usize) -> *mut T {
-            unsafe {
-                alloc_zeroed(Layout::from_size_align_unchecked(
-                    count << Sv39::PAGE_BITS,
-                    1 << Sv39::PAGE_BITS,
-                ))
-            }
-            .cast()
-        }
-    }
-
-    impl PageManager<Sv39> for Sv39Manager {
-        #[inline]
-        fn new_root() -> Self {
-            Self(NonNull::new(Self::page_alloc(1)).unwrap())
-        }
-
-        #[inline]
-        fn root_ppn(&self) -> PPN<Sv39> {
-            PPN::new(self.0.as_ptr() as usize >> Sv39::PAGE_BITS)
-        }
-
-        #[inline]
-        fn root_ptr(&self) -> NonNull<Pte<Sv39>> {
-            self.0
-        }
-
-        #[inline]
-        fn p_to_v<T>(&self, ppn: PPN<Sv39>) -> NonNull<T> {
-            unsafe { NonNull::new_unchecked(VPN::<Sv39>::new(ppn.val()).base().as_mut_ptr()) }
-        }
-
-        #[inline]
-        fn v_to_p<T>(&self, ptr: NonNull<T>) -> PPN<Sv39> {
-            PPN::new(VAddr::<Sv39>::new(ptr.as_ptr() as _).floor().val())
-        }
-
-        #[inline]
-        fn check_owned(&self, pte: Pte<Sv39>) -> bool {
-            pte.flags().contains(Self::OWNED)
-        }
-
-        #[inline]
-        fn allocate(&mut self, len: usize, flags: &mut VmFlags<Sv39>) -> NonNull<u8> {
-            *flags |= Self::OWNED;
-            NonNull::new(Self::page_alloc(len)).unwrap()
-        }
-
-        fn deallocate(&mut self, _pte: Pte<Sv39>, _len: usize) -> usize {
-            todo!()
-        }
-
-        fn drop_root(&mut self) {
-            todo!()
-        }
-    }
-
     pub struct Console;
 
     impl rcore_console::Console for Console {
         #[inline]
         fn put_char(&self, c: u8) {
             #[allow(deprecated)]
-            sbi_rt::legacy::console_putchar(c as _);
+            DebugConsole::putchar(c as _);
         }
     }
 
     pub struct SyscallContext;
-    const READABLE: VmFlags<Sv39> = VmFlags::build_from_str("RV");
-    const WRITEABLE: VmFlags<Sv39> = VmFlags::build_from_str("W_V");
 
     impl IO for SyscallContext {
         fn write(&self, _caller: Caller, fd: usize, buf: usize, count: usize) -> isize {
             let current = unsafe { PROCESSOR.get_current_proc().unwrap() };
-            if let Some(ptr) = current.address_space.translate(VAddr::new(buf), READABLE) {
-                if fd == STDOUT || fd == STDDEBUG {
-                    print!("{}", unsafe {
-                        core::str::from_utf8_unchecked(core::slice::from_raw_parts(
-                            ptr.as_ptr(),
-                            count,
-                        ))
-                    });
-                    count as _
-                } else if let Some(file) = &current.fd_table[fd] {
-                    let mut file = file.lock();
-                    if file.writable() {
-                        let mut v: Vec<&'static mut [u8]> = Vec::new();
-                        unsafe { v.push(core::slice::from_raw_parts_mut(ptr.as_ptr(), count)) };
-                        file.write(UserBuffer::new(v)) as _
-                    } else {
-                        log::error!("file not writable");
-                        -1
-                    }
+            if fd == STDOUT {
+                print!("{}", unsafe {
+                    core::str::from_utf8_unchecked(core::slice::from_raw_parts(
+                        buf as *mut u8,
+                        count,
+                    ))
+                });
+                count as _
+            } else if let Some(file) = &current.fd_table[fd] {
+                let mut file = file.lock();
+                if file.writable() {
+                    let mut v: Vec<&'static mut [u8]> = Vec::new();
+                    unsafe { v.push(core::slice::from_raw_parts_mut(buf as *mut u8, count)) };
+                    file.write(UserBuffer::new(v)) as _
                 } else {
-                    log::error!("unsupported fd: {fd}");
+                    log::error!("file not writable");
                     -1
                 }
             } else {
-                log::error!("ptr not readable");
+                log::error!("unsupported fd: {fd}");
                 -1
             }
         }
 
         fn read(&self, _caller: Caller, fd: usize, buf: usize, count: usize) -> isize {
             let current = unsafe { PROCESSOR.get_current_proc().unwrap() };
-            if let Some(ptr) = current.address_space.translate(VAddr::new(buf), WRITEABLE) {
-                if fd == STDIN {
-                    let mut ptr = ptr.as_ptr();
-                    for _ in 0..count {
-                        #[allow(deprecated)]
+            if fd == STDIN {
+                for _ in 0..count {
+                    if let Some(c) = DebugConsole::getchar() {
+                        let c = c as u8;
+                        let mut ptr = buf as *mut u8;
                         unsafe {
-                            *ptr = sbi_rt::legacy::console_getchar() as u8;
+                            *ptr = c;
                             ptr = ptr.add(1);
                         }
                     }
-                    count as _
-                } else if let Some(file) = &current.fd_table[fd] {
-                    let mut file = file.lock();
-                    if file.readable() {
-                        let mut v: Vec<&'static mut [u8]> = Vec::new();
-                        unsafe { v.push(core::slice::from_raw_parts_mut(ptr.as_ptr(), count)) };
-                        file.read(UserBuffer::new(v)) as _
-                    } else {
-                        log::error!("file not readable");
-                        -1
-                    }
+                }
+                count as _
+            } else if let Some(file) = &current.fd_table[fd] {
+                let mut file = file.lock();
+                if file.readable() {
+                    let mut v: Vec<&'static mut [u8]> = Vec::new();
+                    unsafe { v.push(core::slice::from_raw_parts_mut(buf as *mut u8, count)) };
+                    file.read(UserBuffer::new(v)) as _
                 } else {
-                    log::error!("unsupported fd: {fd}");
+                    log::error!("file not readable");
                     -1
                 }
             } else {
-                log::error!("ptr not writeable");
+                log::error!("unsupported fd: {fd}");
                 -1
             }
         }
@@ -389,31 +309,24 @@ mod impls {
         fn open(&self, _caller: Caller, path: usize, flags: usize) -> isize {
             // FS.open(, flags)
             let current = unsafe { PROCESSOR.get_current_proc().unwrap() };
-            if let Some(ptr) = current.address_space.translate(VAddr::new(path), READABLE) {
-                let mut string = String::new();
-                let mut raw_ptr: *mut u8 = ptr.as_ptr();
-                loop {
-                    unsafe {
-                        let ch = *raw_ptr;
-                        if ch == 0 {
-                            break;
-                        }
-                        string.push(ch as char);
-                        raw_ptr = (raw_ptr as usize + 1) as *mut u8;
+            let mut string = String::new();
+            let mut raw_ptr: *mut u8 = path as *mut u8;
+            loop {
+                unsafe {
+                    let ch = *raw_ptr;
+                    if ch == 0 {
+                        break;
                     }
+                    string.push(ch as char);
+                    raw_ptr = (raw_ptr as usize + 1) as *mut u8;
                 }
-
-                if let Some(fd) =
-                    FS.open(string.as_str(), OpenFlags::from_bits(flags as u32).unwrap())
-                {
-                    let new_fd = current.fd_table.len();
-                    current.fd_table.push(Some(Mutex::new(fd.as_ref().clone())));
-                    new_fd as isize
-                } else {
-                    -1
-                }
+            }
+            if let Some(fd) = FS.open(string.as_str(), OpenFlags::from_bits(flags as u32).unwrap())
+            {
+                let new_fd = current.fd_table.len();
+                current.fd_table.push(Some(Mutex::new(fd.as_ref().clone())));
+                new_fd as isize
             } else {
-                log::error!("ptr not writeable");
                 -1
             }
         }
@@ -436,27 +349,32 @@ mod impls {
         }
 
         fn fork(&self, _caller: Caller) -> isize {
-            let current_proc = unsafe { PROCESSOR.get_current_proc().unwrap() };
-            let (proc, mut thread) = current_proc.fork().unwrap();
-            let pid = proc.pid;
-            *thread.context.context.a_mut(0) = 0 as _;
+            println!("123");
+            let current = unsafe { PROCESSOR.get_current_proc().unwrap() };
+            let _proc = current.fork();
+            println!("456");
+            let (mut child_proc, mut thread) = _proc.unwrap();
+            let pid = child_proc.pid;
+            let tid = thread.tid;
+            let context = &mut thread.trap_cx;
+            context[TrapFrameArgs::ARG0] = 0 as _;
             unsafe {
-                PROCESSOR.add_proc(pid, proc, current_proc.pid);
-                PROCESSOR.add(thread.tid, thread, pid);
+                println!("pid:{:?},tid:{:?}", pid, tid);
+                PROCESSOR.add_proc(pid, child_proc, current.pid);
+                PROCESSOR.add(tid, thread, pid);
             }
             pid.get_usize() as isize
         }
 
         fn exec(&self, _caller: Caller, path: usize, count: usize) -> isize {
-            const READABLE: VmFlags<Sv39> = VmFlags::build_from_str("RV");
             let current = unsafe { PROCESSOR.get_current_proc().unwrap() };
-            current
-                .address_space
-                .translate(VAddr::new(path), READABLE)
-                .map(|ptr| unsafe {
-                    core::str::from_utf8_unchecked(core::slice::from_raw_parts(ptr.as_ptr(), count))
+            let ptr = path as *const u8;
+            let len = unsafe { str_len(ptr) };
+            Some(unsafe { from_utf8_unchecked(slice::from_raw_parts(ptr, len)) })
+                .and_then(|name| {
+                    println!("name is:{}", name);
+                    FS.open(name, OpenFlags::RDONLY)
                 })
-                .and_then(|name| FS.open(name, OpenFlags::RDONLY))
                 .map_or_else(
                     || {
                         log::error!("unknown app, select one in the list: ");
@@ -476,16 +394,11 @@ mod impls {
 
         fn wait(&self, _caller: Caller, pid: isize, exit_code_ptr: usize) -> isize {
             let current = unsafe { PROCESSOR.get_current_proc().unwrap() };
-            const WRITABLE: VmFlags<Sv39> = VmFlags::build_from_str("W_V");
             if let Some((dead_pid, exit_code)) =
                 unsafe { PROCESSOR.wait(ProcId::from_usize(pid as usize)) }
             {
-                if let Some(mut ptr) = current
-                    .address_space
-                    .translate(VAddr::new(exit_code_ptr), WRITABLE)
-                {
-                    unsafe { *ptr.as_mut() = exit_code };
-                }
+                let ptr = exit_code_ptr as *mut isize;
+                unsafe { *ptr = exit_code };
                 return dead_pid.get_usize() as _;
             } else {
                 // 等待的子进程不存在
@@ -509,23 +422,14 @@ mod impls {
     impl Clock for SyscallContext {
         #[inline]
         fn clock_gettime(&self, _caller: Caller, clock_id: ClockId, tp: usize) -> isize {
-            const WRITABLE: VmFlags<Sv39> = VmFlags::build_from_str("W_V");
             match clock_id {
                 ClockId::CLOCK_MONOTONIC => {
-                    if let Some(mut ptr) = unsafe { PROCESSOR.get_current_proc().unwrap() }
-                        .address_space
-                        .translate(VAddr::new(tp), WRITABLE)
-                    {
-                        let time = riscv::register::time::read() * 10000 / 125;
-                        *unsafe { ptr.as_mut() } = TimeSpec {
-                            tv_sec: time / 1_000_000_000,
-                            tv_nsec: time % 1_000_000_000,
-                        };
-                        0
-                    } else {
-                        log::error!("ptr not readable");
-                        -1
-                    }
+                    let time = Time::now().to_usec();
+                    *unsafe { &mut *(tp as *mut TimeSpec) } = TimeSpec {
+                        tv_sec: time / 1_000_000,
+                        tv_nsec: time % 1_000_000,
+                    };
+                    0
                 }
                 _ => -1,
             }
@@ -564,14 +468,12 @@ mod impls {
                 }
                 // 如果需要返回原来的处理函数，则从信号模块中获取
                 if old_action as usize != 0 {
-                    if let Some(mut ptr) = current
-                        .address_space
-                        .translate(VAddr::new(old_action), WRITEABLE)
-                    {
-                        if let Some(signal_action) = current.signal.get_action_ref(signal_no) {
-                            *unsafe { ptr.as_mut() } = signal_action;
-                        } else {
-                            return -1;
+                    let ptr = old_action as *mut SignalAction;
+                    if let Some(signal_action) = current.signal.get_action_ref(signal_no) {
+                        unsafe {
+                            if let Some(ptr) = ptr.as_mut() {
+                                *ptr = signal_action.clone();
+                            }
                         }
                     } else {
                         // 如果返回了 None，说明 signal_no 无效
@@ -580,18 +482,9 @@ mod impls {
                 }
                 // 如果需要设置新的处理函数，则设置到信号模块中
                 if action as usize != 0 {
-                    if let Some(ptr) = current
-                        .address_space
-                        .translate(VAddr::new(action), READABLE)
-                    {
-                        // 如果返回了 false，说明 signal_no 无效
-                        if !current
-                            .signal
-                            .set_action(signal_no, &unsafe { *ptr.as_ptr() })
-                        {
-                            return -1;
-                        }
-                    } else {
+                    let ptr = action as *mut SignalAction;
+                    // 如果返回了 false，说明 signal_no 无效
+                    if !current.signal.set_action(signal_no, &unsafe { *ptr }) {
                         return -1;
                     }
                 }
@@ -609,10 +502,7 @@ mod impls {
             let current = unsafe { PROCESSOR.get_current_proc().unwrap() };
             let current_thread = unsafe { PROCESSOR.current().unwrap() };
             // 如成功，则需要修改当前用户程序的 LocalContext
-            if current
-                .signal
-                .sig_return(&mut current_thread.context.context)
-            {
+            if current.signal.sig_return(&mut current_thread.trap_cx) {
                 0
             } else {
                 -1
@@ -624,32 +514,18 @@ mod impls {
         fn thread_create(&self, _caller: Caller, entry: usize, arg: usize) -> isize {
             // 主要的问题是用户栈怎么分配，这里不增加其他的数据结构，直接从规定的栈顶的位置从下搜索是否被映射
             let current_proc = unsafe { PROCESSOR.get_current_proc().unwrap() };
-            // 第一个线程的用户栈栈底
-            let mut vpn = VPN::<Sv39>::new((1 << 26) - 2);
-            let addrspace = &mut current_proc.address_space;
-            loop {
-                let idx = vpn.index_in(Sv39::MAX_LEVEL);
-                if !addrspace.root()[idx].is_valid() {
-                    break;
-                }
-                vpn = VPN::<Sv39>::new(vpn.val() - 3);
+            let proc_stack_addr = current_proc.usr_stack;
+            let pid = current_proc.pid;
+            let cnt = unsafe { PROCESSOR.get_thread(pid).unwrap().len() };
+            if (cnt > 4) {
+                panic!("Too many threads!");
             }
-            let stack = unsafe {
-                alloc_zeroed(Layout::from_size_align_unchecked(
-                    2 << Sv39::PAGE_BITS,
-                    1 << Sv39::PAGE_BITS,
-                ))
-            };
-            addrspace.map_extern(
-                vpn..vpn + 2,
-                PPN::new(stack as usize >> Sv39::PAGE_BITS),
-                VmFlags::build_from_str("U_WRV"),
-            );
-            let satp = (8 << 60) | addrspace.root_ppn().val();
-            let mut context = kernel_context::LocalContext::user(entry);
-            *context.sp_mut() = (vpn + 2).base().val();
-            *context.a_mut(0) = arg;
-            let thread = Thread::new(satp, context);
+            let stack = proc_stack_addr - 4096 * 5 * (cnt - 1);
+            let mut ctx = TrapFrame::new();
+            ctx[TrapFrameArgs::SEPC] = entry;
+            ctx[TrapFrameArgs::SP] = stack;
+            ctx[TrapFrameArgs::ARG0] = arg;
+            let thread = Thread::new(pid, ctx);
             let tid = thread.tid;
             unsafe {
                 PROCESSOR.add(tid, thread, current_proc.pid);

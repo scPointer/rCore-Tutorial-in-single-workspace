@@ -9,6 +9,7 @@ pub static mut PROCESSOR: PThreadManager<Process, Thread, ThreadManager, ProcMan
 /// `tasks` 中保存所有的任务实体
 /// `ready_queue` 删除任务的实体
 pub struct ThreadManager {
+    current: Option<ThreadId>,
     tasks: BTreeMap<ThreadId, Thread>,
     ready_queue: VecDeque<ThreadId>,
 }
@@ -17,6 +18,7 @@ impl ThreadManager {
     /// 新建任务管理器
     pub fn new() -> Self {
         Self {
+            current:None,
             tasks: BTreeMap::new(),
             ready_queue: VecDeque::new(),
         }
@@ -39,6 +41,12 @@ impl Manage<Thread, ThreadId> for ThreadManager {
     fn delete(&mut self, id: ThreadId) {
         self.tasks.remove(&id);
     }
+
+    /// get current process
+    #[inline]
+    fn current(&mut self) -> Option<&mut Thread>{
+        self.get_mut(self.current.unwrap())
+    }    
 }
 
 impl Schedule<ThreadId> for ThreadManager {
@@ -55,6 +63,7 @@ impl Schedule<ThreadId> for ThreadManager {
 /// 进程管理器
 /// `procs` 中保存所有的进程实体
 pub struct ProcManager {
+    current:Option<ProcId>,
     procs: BTreeMap<ProcId, Process>,
 }
 
@@ -62,6 +71,7 @@ impl ProcManager {
     /// 新建进程管理器
     pub fn new() -> Self {
         Self {
+            current:None,
             procs: BTreeMap::new(),
         }
     }
@@ -83,4 +93,10 @@ impl Manage<Process, ProcId> for ProcManager {
     fn delete(&mut self, id: ProcId) {
         self.procs.remove(&id);
     }
+
+    /// get current process
+    #[inline]
+    fn current(&mut self) -> Option<&mut Process>{
+        self.get_mut(self.current.unwrap())
+    } 
 }

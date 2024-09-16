@@ -8,7 +8,7 @@
 
 extern crate alloc;
 use alloc::boxed::Box;
-use kernel_context::LocalContext;
+use polyhal::trapframe::TrapFrame;
 pub use signal_defs::{SignalAction, SignalNo, MAX_SIG};
 
 mod signal_result;
@@ -42,8 +42,8 @@ pub trait Signal: Send + Sync {
     fn update_mask(&mut self, mask: usize) -> usize;
 
     /// 进程执行结果，可能是直接返回用户程序或存栈或暂停或退出
-    fn handle_signals(&mut self, current_context: &mut LocalContext) -> SignalResult;
+    fn handle_signals(&mut self, current_context: &mut TrapFrame) -> SignalResult;
 
     /// 从信号处理函数中退出，返回值表示是否成功。`sys_sigreturn` 会使用
-    fn sig_return(&mut self, current_context: &mut LocalContext) -> bool;
+    fn sig_return(&mut self, current_context: &mut TrapFrame) -> bool;
 }

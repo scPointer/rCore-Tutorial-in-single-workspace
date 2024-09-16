@@ -161,7 +161,7 @@ impl QemuArgs {
             .args(&["-smp", &self.smp.unwrap_or(1).to_string()])
             .args(&["-m", "64M"])
             .args(&["-serial", "mon:stdio"])
-            .args(&["-D", "qemu.log", "-d", "in_asm,int,pcall,cpu_reset,guest_errors,page,mmu"]);
+            .args(&["-D", "qemu.log", "-d", "in_asm,int,pcall,cpu_reset,guest_errors"]);
         if self.build.ch > 5 {
             // Add VirtIO Device
             qemu.args(&[

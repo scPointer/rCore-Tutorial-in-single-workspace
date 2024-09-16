@@ -8,6 +8,7 @@ pub static mut PROCESSOR: PManager<Process, ProcManager> = PManager::new();
 /// `tasks` 中保存所有的任务实体
 /// `ready_queue` 删除任务的实体
 pub struct ProcManager {
+    current: Option<ProcId>,
     tasks: BTreeMap<ProcId, Process>,
     ready_queue: VecDeque<ProcId>,
 }
@@ -16,6 +17,7 @@ impl ProcManager {
     /// 新建任务管理器
     pub fn new() -> Self {
         Self {
+            current:None,
             tasks: BTreeMap::new(),
             ready_queue: VecDeque::new(),
         }
@@ -38,6 +40,12 @@ impl Manage<Process, ProcId> for ProcManager {
     fn delete(&mut self, id: ProcId) {
         self.tasks.remove(&id);
     }
+
+    /// get current process
+    #[inline]
+    fn current(&mut self) -> Option<&mut Process>{
+        self.get_mut(self.current.unwrap())
+    }   
 }
 
 impl Schedule<ProcId> for ProcManager {

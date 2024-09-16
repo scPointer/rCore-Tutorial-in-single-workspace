@@ -54,7 +54,7 @@ impl FSManager for FileSystem {
 
 pub fn read_all(fd: Arc<FileHandle>) -> Vec<u8> {
     let mut offset = 0usize;
-    let mut buffer = [0u8; 512];
+    let mut buffer = [0u8; 0x1000];
     let mut v: Vec<u8> = Vec::new();
     if let Some(inode) = &fd.inode {
         loop {
@@ -65,6 +65,7 @@ pub fn read_all(fd: Arc<FileHandle>) -> Vec<u8> {
             offset += len;
             v.extend_from_slice(&buffer[..len]);
         }
+        println!("123");
     }
     v
 }

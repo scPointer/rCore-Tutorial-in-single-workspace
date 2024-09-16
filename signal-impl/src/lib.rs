@@ -4,7 +4,7 @@
 
 extern crate alloc;
 use alloc::boxed::Box;
-use kernel_context::LocalContext;
+use polyhal::trapframe::*;
 use signal::{Signal, SignalAction, SignalNo, SignalResult, MAX_SIG};
 
 mod default_action;
@@ -15,7 +15,7 @@ use signal_set::SignalSet;
 /// 正在处理的信号
 pub enum HandlingSignal {
     Frozen,                   // 是内核信号，需要暂停当前进程
-    UserSignal(LocalContext), // 是用户信号，需要保存之前的用户栈
+    UserSignal(TrapFrame), // 是用户信号，需要保存之前的用户栈
 }
 
 /// 管理一个进程中的信号
@@ -66,6 +66,7 @@ impl SignalImpl {
 
 impl Signal for SignalImpl {
     fn from_fork(&mut self) -> Box<dyn Signal> {
+        log::info!("999");
         Box::new(Self {
             received: SignalSet::empty(),
             mask: self.mask,
@@ -118,7 +119,7 @@ impl Signal for SignalImpl {
         self.mask.set_new(mask.into())
     }
 
-    fn handle_signals(&mut self, current_context: &mut LocalContext) -> SignalResult {
+    fn handle_signals(&mut self, current_context: &mut TrapFrame) -> SignalResult {
         if self.is_handling_signal() {
             match self.handling.as_ref().unwrap() {
                 // 如果当前正在暂停状态
@@ -149,8 +150,8 @@ impl Signal for SignalImpl {
                         self.handling = Some(HandlingSignal::UserSignal(current_context.clone()));
                         // 修改返回后的 pc 值为 handler，修改 a0 为信号编号
                         //println!("handle pre {:x}, after {:x}", current_context.pc(), action.handler);
-                        *current_context.pc_mut() = action.handler;
-                        *current_context.a_mut(0) = signal as usize;
+                        current_context[TrapFrameArgs::SEPC] = action.handler;
+                        current_context[TrapFrameArgs::ARG0] = signal as usize;
                         SignalResult::Handled
                     } else {
                         // 否则，使用自定义的 DefaultAction 类来处理
@@ -164,7 +165,7 @@ impl Signal for SignalImpl {
         }
     }
 
-    fn sig_return(&mut self, current_context: &mut LocalContext) -> bool {
+    fn sig_return(&mut self, current_context: &mut TrapFrame) -> bool {
         let handling_signal = self.handling.take();
         match handling_signal {
             Some(HandlingSignal::UserSignal(old_ctx)) => {
