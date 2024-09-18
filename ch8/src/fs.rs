@@ -64,6 +64,7 @@ pub fn read_all(fd: Arc<FileHandle>) -> Vec<u8> {
             }
             offset += len;
             v.extend_from_slice(&buffer[..len]);
+            println!("666");
         }
         println!("123");
     }

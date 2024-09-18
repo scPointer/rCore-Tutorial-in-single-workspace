@@ -41,6 +41,8 @@ use signal::SignalResult;
 use syscall::Caller;
 use xmas_elf::ElfFile;
 static mut esr: EscapeReason = EscapeReason::NoReason;
+use spin::Lazy;
+pub static SCHEDULER:Lazy<KContext> = Lazy::new(||KContext::blank());
 
 pub struct PageAllocImpl;
 
@@ -118,7 +120,7 @@ pub fn schedule() -> ! {
                 // let mut scheduler = &mut *SCHEDULER;
                 let new_pagetable = PROCESSOR.get_proc(task.ppid).unwrap().memory_set.token();
                 context_switch_pt(
-                    &mut _unused as *mut KContext,
+                    SCHEDULER.as_mut_ptr(),
                     &mut task.task_cx,
                     new_pagetable,
                 );
@@ -132,6 +134,7 @@ pub fn schedule() -> ! {
 }
 
 pub fn task_entry() {
+    let mut _unused = KContext::blank();
     loop{
     let task = unsafe { PROCESSOR.current().unwrap() };
     log::info!("reschedule tid: {:?}", task.tid);
@@ -192,7 +195,7 @@ pub fn task_entry() {
         }
     }
     log::info!("schedule tid: {:?}", task.tid);
-    schedule();
+    unsafe {context_switch(&mut _unused as *mut KContext, SCHEDULER.as_mut_ptr())};
 }
 }
 

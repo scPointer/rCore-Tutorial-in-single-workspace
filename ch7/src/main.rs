@@ -14,6 +14,7 @@ extern crate rcore_console;
 
 #[macro_use]
 extern crate alloc;
+extern crate spin;
 
 use crate::{
     fs::{read_all, FS},
@@ -23,8 +24,8 @@ use crate::{
 };
 use alloc::alloc::alloc;
 use kernel_vm::{frame_alloc_page_with_clear, frame_dealloc, init_frame_allocator};
-use polyhal::{common::{get_mem_areas, PageAlloc}, instruction::Instruction, kcontext::{context_switch_pt, KContext, KContextArgs}, trap::{run_user_task, EscapeReason, TrapType}, trapframe::{TrapFrame, TrapFrameArgs}, PhysPage};
-use core::{alloc::Layout, mem::MaybeUninit};
+use polyhal::{common::{get_mem_areas, PageAlloc}, instruction::Instruction, kcontext::{context_switch, context_switch_pt, KContext, KContextArgs}, trap::{run_user_task, EscapeReason, TrapType}, trapframe::{TrapFrame, TrapFrameArgs}, PhysPage};
+use core::{alloc::Layout, mem::MaybeUninit, task::Context};
 use easy_fs::{FSManager, OpenFlags};
 use impls::Console;
 pub use processor::PROCESSOR;
@@ -33,10 +34,12 @@ use rcore_task_manage::ProcId;
 use signal::SignalResult;
 use syscall::Caller;
 use xmas_elf::ElfFile;
+use spin::Lazy;
 
 static mut esr: EscapeReason = EscapeReason::NoReason;
+pub static SCHEDULER:Lazy<KContext> = Lazy::new(||KContext::blank());
 
-// 物理内存容量 = 48 MiB。
+// 物理内存容量 = 48 MiB。;
 const MEMORY: usize = 48 << 20;
 
 pub struct PageAllocImpl;
@@ -105,14 +108,14 @@ extern "C" fn rust_main() -> ! {
 pub fn schedule() -> ! {
     loop {
         if let Some(task) = unsafe { PROCESSOR.find_next() } {
-            let mut _unused = KContext::blank();
+            // let mut _unused = KContext::blank();
             let new_pagetable = unsafe { task.memory_set.token() };
             // log::info!("change pagetable: {:?}", new_pagetable);
             unsafe {
                 task.task_cx[KContextArgs::KPC] = task_entry as usize;
                 // let mut scheduler = &mut *SCHEDULER;
                 context_switch_pt(
-                    &mut _unused as *mut KContext,
+                    SCHEDULER.as_mut_ptr(),
                     &mut task.task_cx,
                     new_pagetable,
                 );
@@ -126,7 +129,9 @@ pub fn schedule() -> ! {
 }
 
 pub fn task_entry() {
+loop{
     let task = unsafe{PROCESSOR.get_current().unwrap()};
+    let mut _unused = KContext::blank();
     unsafe {
         esr = run_user_task(&mut PROCESSOR.get_current().unwrap().trap_cx);
     }
@@ -175,8 +180,8 @@ pub fn task_entry() {
                     unsafe { PROCESSOR.make_current_exited(-3) };
                 }
             }
-
-    schedule();
+    unsafe {context_switch(&mut _unused as *mut KContext, SCHEDULER.as_mut_ptr())};
+}
 }
 
 /// Rust 异常处理函数，以异常方式关机。
