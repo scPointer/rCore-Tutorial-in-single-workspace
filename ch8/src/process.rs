@@ -43,20 +43,23 @@ pub struct Thread {
     /// 可变
     pub trap_cx: TrapFrame,
     pub task_cx: KContext,
+    pub kstack:KernelStack
 }
 
 impl Thread {
     pub fn new(ppid: ProcId, context: TrapFrame) -> Self {
+        let kstack = KernelStack::new();
         Self {
             tid: ThreadId::new(),
             ppid,
             trap_cx:context,
             task_cx:{
                 let mut context = KContext::blank();
-                context[KContextArgs::KSP] = KernelStack::new().get_position().1;
+                context[KContextArgs::KSP] = kstack.get_position().1;
                 context[KContextArgs::KTP] = read_current_tp();
                 context
             },
+            kstack
         }
     }
 }
@@ -81,11 +84,10 @@ pub struct Process {
 impl Process {
     /// 只支持一个线程
     pub fn exec(&mut self, elf: ElfFile) {
-        println!("ppp");
         let (proc, thread) = Process::from_elf(elf).unwrap();
-        println!("qqq");
         self.memory_set = proc.memory_set;
         self.usr_stack = proc.usr_stack;
+        self.pid = proc.pid;
         unsafe {
             let pthreads = PROCESSOR.get_thread(self.pid).unwrap();
             PROCESSOR.get_task(pthreads[0]).unwrap().task_cx = thread.task_cx;
