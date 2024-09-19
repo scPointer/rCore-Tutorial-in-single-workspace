@@ -60,6 +60,7 @@ impl PageAlloc for PageAllocImpl {
 
 #[polyhal::arch_interrupt]
 fn kernel_interrupt(ctx: &mut TrapFrame, trap_type: TrapType) {
+    // log::info!("trapType is {:?}",trap_type);
     // match trap_type {
     //     TrapType::StorePageFault(_paddr) => {
     //         log::info!("paddr={:x}", _paddr);
@@ -97,7 +98,7 @@ extern "C" fn rust_main() -> ! {
     syscall::init_signal(&SyscallContext);
     syscall::init_thread(&SyscallContext);
     syscall::init_sync_mutex(&SyscallContext);
-    let initproc = read_all(FS.open("initproc", OpenFlags::RDONLY).unwrap());
+    let initproc = read_all(FS.open("threads", OpenFlags::RDONLY).unwrap());
     if let Some((process, thread)) = Process::from_elf(ElfFile::new(initproc.as_slice()).unwrap()) {
         unsafe {
             PROCESSOR.set_proc_manager(ProcManager::new());
@@ -137,7 +138,6 @@ pub fn task_entry() {
     let mut _unused = KContext::blank();
     loop{
     let task = unsafe { PROCESSOR.current().unwrap() };
-    log::info!("reschedule tid: {:?}", task.tid);
     unsafe {
         esr = run_user_task(&mut task.trap_cx);
     }
@@ -147,7 +147,6 @@ pub fn task_entry() {
             let ctx = &mut task.trap_cx;
             ctx[TrapFrameArgs::SEPC] += 4;
             let id: Id = ctx[TrapFrameArgs::SYSCALL].into();
-            println!("{:?}", id);
             let args = ctx.args();
             let syscall_ret = syscall::handle(Caller { entity: 0, flow: 0 }, id, args);
             // 目前信号处理位置放在 syscall 执行之后，这只是临时的实现。
@@ -194,7 +193,6 @@ pub fn task_entry() {
             unsafe { PROCESSOR.make_current_exited(-3) };
         }
     }
-    log::info!("schedule tid: {:?}", task.tid);
     unsafe {context_switch(&mut _unused as *mut KContext, SCHEDULER.as_mut_ptr())};
 }
 }
@@ -520,10 +518,10 @@ mod impls {
             let proc_stack_addr = current_proc.usr_stack;
             let pid = current_proc.pid;
             let cnt = unsafe { PROCESSOR.get_thread(pid).unwrap().len() };
-            if (cnt > 4) {
+            if (cnt > 10) {
                 panic!("Too many threads!");
             }
-            let stack = proc_stack_addr - 4096 * 5 * (cnt - 1);
+            let stack = proc_stack_addr - 4096 * 4 * (cnt - 1);
             let mut ctx = TrapFrame::new();
             ctx[TrapFrameArgs::SEPC] = entry;
             ctx[TrapFrameArgs::SP] = stack;

@@ -87,13 +87,13 @@ impl Process {
         let (proc, thread) = Process::from_elf(elf).unwrap();
         self.memory_set = proc.memory_set;
         self.usr_stack = proc.usr_stack;
-        self.pid = proc.pid;
+        // self.pid = proc.pid;
         unsafe {
             let pthreads = PROCESSOR.get_thread(self.pid).unwrap();
             PROCESSOR.get_task(pthreads[0]).unwrap().task_cx = thread.task_cx;
             PROCESSOR.get_task(pthreads[0]).unwrap().trap_cx = thread.trap_cx;
-            PROCESSOR.get_task(pthreads[0]).unwrap().ppid = thread.ppid;
-            PROCESSOR.get_task(pthreads[0]).unwrap().tid = thread.tid;
+            // PROCESSOR.get_task(pthreads[0]).unwrap().ppid = thread.ppid;
+            // PROCESSOR.get_task(pthreads[0]).unwrap().tid = thread.tid;
 
         }
     }
