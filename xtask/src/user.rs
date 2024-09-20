@@ -1,4 +1,4 @@
-use crate::{fs_pack::easy_fs_pack, objcopy, PROJECT, TARGET, TARGET_ARCH};
+use crate::{fs_pack::easy_fs_pack, objcopy, target_dir, PROJECT};
 use os_xtask_utils::{Cargo, CommandExt};
 use serde_derive::Deserialize;
 use std::{collections::HashMap, ffi::OsStr, fs::File, io::Write, path::PathBuf};
@@ -17,14 +17,14 @@ pub struct CasesInfo {
 }
 
 impl Cases {
-    fn build(&mut self, release: bool) -> CasesInfo {
+    fn build(&mut self, release: bool, target_arch: String) -> CasesInfo {
         if let Some(names) = &self.cases {
             let base = self.base.unwrap_or(0);
             let step = self.step.filter(|_| self.base.is_some()).unwrap_or(0);
             let cases = names
                 .into_iter()
                 .enumerate()
-                .map(|(i, name)| build_one(name, release, base + i as u64 * step))
+                .map(|(i, name)| build_one(name, release, base + i as u64 * step, target_arch.clone()))
                 .collect();
             CasesInfo {
                 base,
@@ -41,7 +41,7 @@ impl Cases {
     }
 }
 
-fn build_one(name: impl AsRef<OsStr>, release: bool, base_address: u64) -> PathBuf {
+fn build_one(name: impl AsRef<OsStr>, release: bool, base_address: u64, target_arch: String) -> PathBuf {
     let name = name.as_ref();
     let binary = base_address != 0;
     if binary {
@@ -49,7 +49,7 @@ fn build_one(name: impl AsRef<OsStr>, release: bool, base_address: u64) -> PathB
     }
     Cargo::build()
         .package("user_lib")
-        .target(TARGET_ARCH)
+        .target(target_arch.clone())
         .arg("--bin")
         .arg(name)
         .conditional(release, |cargo| {
@@ -59,7 +59,7 @@ fn build_one(name: impl AsRef<OsStr>, release: bool, base_address: u64) -> PathB
             cargo.env("BASE_ADDRESS", base_address.to_string());
         })
         .invoke();
-    let elf = TARGET
+    let elf = target_dir(target_arch)
         .join(if release { "release" } else { "debug" })
         .join(name);
     if binary {
@@ -69,21 +69,25 @@ fn build_one(name: impl AsRef<OsStr>, release: bool, base_address: u64) -> PathB
     }
 }
 
-pub fn build_for(ch: u8, release: bool) {
+pub fn build_for(ch: u8, release: bool, target_arch: String) {
     let cfg = std::fs::read_to_string(PROJECT.join("user/cases.toml")).unwrap();
     let mut cases = toml::from_str::<HashMap<String, Cases>>(&cfg)
         .unwrap()
         .remove(&format!("ch{ch}"))
         .unwrap_or_default();
-    let CasesInfo { base, step, bins } = cases.build(release);
-    // let base = base + 0xffffffc000000000;
+    let CasesInfo { base, step, bins } = cases.build(release, target_arch.clone());
+    let base = if ch <= 3 {
+        base + 0xffffffc000000000
+    } else {
+        base
+    };
     if bins.is_empty() {
         return;
     }
-    let asm = TARGET
+    let asm = target_dir(target_arch.clone())
         .join(if release { "release" } else { "debug" })
         .join("app.asm");
-    let mut ld = File::create(asm).unwrap();
+    let mut ld: File = File::create(asm).unwrap();
     writeln!(
         ld,
         "\
@@ -129,7 +133,7 @@ app_names:"
     } else if ch >= 6 {
         easy_fs_pack(
             &cases.cases.unwrap(),
-            TARGET
+            target_dir(target_arch)
                 .join(if release { "release" } else { "debug" })
                 .into_os_string()
                 .into_string()

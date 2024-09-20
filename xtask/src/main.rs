@@ -14,12 +14,13 @@ use std::{
     path::{Path, PathBuf},
 };
 
-const TARGET_ARCH: &str = "riscv64gc-unknown-none-elf";
-
 static PROJECT: Lazy<&'static Path> =
     Lazy::new(|| Path::new(std::env!("CARGO_MANIFEST_DIR")).parent().unwrap());
 
-static TARGET: Lazy<PathBuf> = Lazy::new(|| PROJECT.join("target").join(TARGET_ARCH));
+// static TARGET: Lazy<PathBuf> = Lazy::new(|| PROJECT.join("target").join(TARGET_ARCH));
+fn target_dir(target_arch: String) -> PathBuf {
+    PROJECT.join("target").join(target_arch)
+}
 
 #[derive(Parser)]
 #[clap(name = "rCore-Tutorial")]
@@ -49,6 +50,9 @@ fn main() {
 
 #[derive(Args, Default)]
 struct BuildArgs {
+    /// architectures
+    #[clap(long)]
+    arch: Option<String>,
     /// chapter number
     #[clap(short, long)]
     ch: u8,
@@ -67,15 +71,47 @@ struct BuildArgs {
 }
 
 impl BuildArgs {
+    fn get_arch(&self) -> String {
+        const TARGET_ARCH_GROUP: [&str; 4] = [
+            "riscv64gc-unknown-none-elf",
+            "x86_64-unknown-none",
+            "aarch64-unknown-none-softfloat",
+            "loongarch64-unknown-none"
+        ];
+
+        let arch_idx = self.arch.as_ref().map(|x| {
+            match x.as_str() {
+                "riscv64" => 0,
+                "x86_64" => 1,
+                "aarch64" => 2,
+                "loongarch64" => 3,
+                _ => 0,
+            }
+        }).unwrap_or(0);
+        TARGET_ARCH_GROUP[arch_idx].to_string()
+    }
+    fn get_arch_raw(&self) -> String {
+        self.arch.as_ref().map(|x| {
+            match x.as_str() {
+                "riscv64" |
+                "x86_64" |
+                "aarch64" |
+                "loongarch64" => {
+                    x.clone()
+                },
+                _ => String::from("riscv64"),
+            }
+        }).unwrap_or(String::from("riscv64"))
+    }
     fn make(&self) -> PathBuf {
         let mut env: HashMap<&str, OsString> = HashMap::new();
         let package = match self.ch {
             1 => if self.lab { "ch1-lab" } else { "ch1" }.to_string(),
             2..=8 => {
-                user::build_for(self.ch, false);
+                user::build_for(self.ch, false, self.get_arch());
                 env.insert(
                     "APP_ASM",
-                    TARGET
+                    target_dir(self.get_arch())
                         .join("debug")
                         .join("app.asm")
                         .as_os_str()
@@ -98,12 +134,12 @@ impl BuildArgs {
             .conditional(self.release, |cargo| {
                 cargo.release();
             })
-            .target(TARGET_ARCH);
+            .target(self.get_arch());
         for (key, value) in env {
             build.env(key, value);
         }
         build.invoke();
-        TARGET
+        target_dir(self.get_arch())
             .join(if self.release { "release" } else { "debug" })
             .join(package)
     }
@@ -151,24 +187,33 @@ impl QemuArgs {
         if let Some(p) = &self.qemu_dir {
             Qemu::search_at(p);
         }
-        let mut qemu = Qemu::system("riscv64");
-        qemu.args(&["-machine", "virt"])
-            .arg("-nographic")
-            .arg("-bios")
-            .arg(PROJECT.join("rustsbi-qemu.bin"))
+        let mut qemu = Qemu::system(self.build.get_arch_raw().as_str());
+        let qemu = match self.build.get_arch_raw().as_str() {
+            "riscv64" => qemu.args(&["-machine", "virt"]),
+            "aarch64" => qemu.args(&["-machine", "virt"]).args(&["-cpu", "cortex-a72"]),
+            "x86_64" => todo!(),
+            "loongarch64" => todo!(),
+            _ => unreachable!(),
+        };
+        qemu.arg("-nographic")
             .arg("-kernel")
             .arg(objcopy(elf, true))
             .args(&["-smp", &self.smp.unwrap_or(1).to_string()])
-            .args(&["-m", "64M"])
+            .args(&["-m", "1G"])
             .args(&["-serial", "mon:stdio"])
-            .args(&["-D", "qemu.log", "-d", "in_asm,int,pcall,cpu_reset,guest_errors"]);
+            .args(&[
+                "-D",
+                "qemu.log",
+                "-d",
+                "in_asm,int,pcall,cpu_reset,guest_errors",
+            ]);
         if self.build.ch > 5 {
             // Add VirtIO Device
             qemu.args(&[
                 "-drive",
                 format!(
                     "file={},if=none,format=raw,id=x0",
-                    TARGET
+                    target_dir(self.build.get_arch())
                         .join("debug")
                         .join("fs.img")
                         .into_os_string()

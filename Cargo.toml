@@ -15,7 +15,7 @@ members = [
     "linker",
     "console",
     "syscall",
-    "kernel-context",
+    # "kernel-context",
     "kernel-alloc",
     "kernel-vm",
     "task-manage",

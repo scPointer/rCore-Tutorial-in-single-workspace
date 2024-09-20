@@ -391,13 +391,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "kernel-context"
-version = "0.1.0"
-dependencies = [
- "spin 0.9.8",
-]
-
-[[package]]
 name = "kernel-vm"
 version = "0.1.0"
 dependencies = [
@@ -713,7 +706,6 @@ dependencies = [
 name = "signal"
 version = "0.1.0"
 dependencies = [
- "kernel-context",
  "polyhal 0.1.3 (git+https://github.com/xushanpu123/polyhal.git)",
  "signal-defs",
 ]
@@ -729,7 +721,6 @@ dependencies = [
 name = "signal-impl"
 version = "0.1.0"
 dependencies = [
- "kernel-context",
  "log",
  "polyhal 0.1.3 (git+https://github.com/xushanpu123/polyhal.git)",
  "signal",
