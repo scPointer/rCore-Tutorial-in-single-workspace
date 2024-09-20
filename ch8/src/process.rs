@@ -90,6 +90,7 @@ impl Process {
         // self.pid = proc.pid;
         unsafe {
             let pthreads = PROCESSOR.get_thread(self.pid).unwrap();
+            PROCESSOR.get_task(pthreads[0]).unwrap().kstack = thread.kstack;
             PROCESSOR.get_task(pthreads[0]).unwrap().task_cx = thread.task_cx;
             PROCESSOR.get_task(pthreads[0]).unwrap().trap_cx = thread.trap_cx;
             // PROCESSOR.get_task(pthreads[0]).unwrap().ppid = thread.ppid;
@@ -103,7 +104,7 @@ impl Process {
         let pid = ProcId::new();
         // 复制父进程地址空间
         let parent_addr_space = &self.memory_set;
-        let mut address_space = MemorySet::from_existed_user(parent_addr_space);
+        let address_space = MemorySet::from_existed_user(parent_addr_space);
         // 线程
         let pthreads = unsafe { PROCESSOR.get_thread(self.pid).unwrap() };
         let context = unsafe {
@@ -144,9 +145,8 @@ impl Process {
 
     pub fn from_elf(elf: ElfFile) -> Option<(Self, Thread)> {
         let (memory_set, user_sp, entry_point) = MemorySet::from_elf(elf);    
-        let kstack = KernelStack::new();
         // push a task context which goes to trap_return to the top of kernel stack
-        let mut process = Self {
+        let process = Self {
             pid:ProcId::new(),
             memory_set,
             fd_table:vec![
@@ -165,7 +165,7 @@ impl Process {
         ctx[TrapFrameArgs::SEPC]=entry_point;
 
         ctx[TrapFrameArgs::SP]=user_sp;
-        let mut thread = Thread::new(process.pid, ctx);
+        let thread = Thread::new(process.pid, ctx);
         Some((process,thread))
     }
 }

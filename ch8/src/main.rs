@@ -98,7 +98,7 @@ extern "C" fn rust_main() -> ! {
     syscall::init_signal(&SyscallContext);
     syscall::init_thread(&SyscallContext);
     syscall::init_sync_mutex(&SyscallContext);
-    let initproc = read_all(FS.open("threads", OpenFlags::RDONLY).unwrap());
+    let initproc = read_all(FS.open("initproc", OpenFlags::RDONLY).unwrap());
     if let Some((process, thread)) = Process::from_elf(ElfFile::new(initproc.as_slice()).unwrap()) {
         unsafe {
             PROCESSOR.set_proc_manager(ProcManager::new());
@@ -114,15 +114,16 @@ extern "C" fn rust_main() -> ! {
 pub fn schedule() -> ! {
     loop {
         if let Some(task) = unsafe { PROCESSOR.find_next() } {
-            let mut _unused = KContext::blank();
-            // log::info!("change pagetable: {:?}", new_pagetable);
+            let mut temp_ctx = KContext::blank();
             unsafe {
-                task.task_cx[KContextArgs::KPC] = task_entry as usize;
+                temp_ctx[KContextArgs::KSP] = task.task_cx[KContextArgs::KSP];
+                temp_ctx[KContextArgs::KTP] = task.task_cx[KContextArgs::KTP];
+                temp_ctx[KContextArgs::KPC] = task_entry as usize;
                 // let mut scheduler = &mut *SCHEDULER;
                 let new_pagetable = PROCESSOR.get_proc(task.ppid).unwrap().memory_set.token();
                 context_switch_pt(
                     SCHEDULER.as_mut_ptr(),
-                    &mut task.task_cx,
+                    &mut temp_ctx,
                     new_pagetable,
                 );
             }
@@ -135,8 +136,6 @@ pub fn schedule() -> ! {
 }
 
 pub fn task_entry() {
-    let mut _unused = KContext::blank();
-    loop{
     let task = unsafe { PROCESSOR.current().unwrap() };
     unsafe {
         esr = run_user_task(&mut task.trap_cx);
@@ -193,8 +192,9 @@ pub fn task_entry() {
             unsafe { PROCESSOR.make_current_exited(-3) };
         }
     }
+
+    let mut _unused = KContext::blank();
     unsafe {context_switch(&mut _unused as *mut KContext, SCHEDULER.as_mut_ptr())};
-}
 }
 
 /// Rust 异常处理函数，以异常方式关机。
@@ -517,11 +517,8 @@ mod impls {
             let current_proc = unsafe { PROCESSOR.get_current_proc().unwrap() };
             let proc_stack_addr = current_proc.usr_stack;
             let pid = current_proc.pid;
-            let cnt = unsafe { PROCESSOR.get_thread(pid).unwrap().len() };
-            if (cnt > 10) {
-                panic!("Too many threads!");
-            }
-            let stack = proc_stack_addr - 4096 * 4 * (cnt - 1);
+            let stack = proc_stack_addr - 0x1000 * 4;
+            current_proc.usr_stack = stack;
             let mut ctx = TrapFrame::new();
             ctx[TrapFrameArgs::SEPC] = entry;
             ctx[TrapFrameArgs::SP] = stack;
