@@ -124,7 +124,6 @@ impl Process {
                 new_fd_table.push(None);
             }
         }
-        println!("3335");
         let res =(
             Self {
                 pid,
@@ -138,7 +137,6 @@ impl Process {
             },
             thread,
         );
-        println!("777");
         Some(res)
         // None
     }

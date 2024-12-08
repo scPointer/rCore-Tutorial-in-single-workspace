@@ -66,7 +66,6 @@ impl SignalImpl {
 
 impl Signal for SignalImpl {
     fn from_fork(&mut self) -> Box<dyn Signal> {
-        log::info!("999");
         Box::new(Self {
             received: SignalSet::empty(),
             mask: self.mask,

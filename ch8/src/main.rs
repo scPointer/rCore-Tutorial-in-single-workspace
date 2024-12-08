@@ -350,10 +350,8 @@ mod impls {
         }
 
         fn fork(&self, _caller: Caller) -> isize {
-            println!("123");
             let current = unsafe { PROCESSOR.get_current_proc().unwrap() };
             let _proc = current.fork();
-            println!("456");
             let (mut child_proc, mut thread) = _proc.unwrap();
             let pid = child_proc.pid;
             let tid = thread.tid;
@@ -373,7 +371,6 @@ mod impls {
             let len = unsafe { str_len(ptr) };
             Some(unsafe { from_utf8_unchecked(slice::from_raw_parts(ptr, len)) })
                 .and_then(|name| {
-                    println!("name is:{}", name);
                     FS.open(name, OpenFlags::RDONLY)
                 })
                 .map_or_else(
