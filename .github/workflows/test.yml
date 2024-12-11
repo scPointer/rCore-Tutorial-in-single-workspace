@@ -23,7 +23,6 @@ jobs:
 
       - name: usertests
         run: 
-          cargo make --ch 8
           cargo qemu --ch 8  --release
 
       
