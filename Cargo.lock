@@ -498,8 +498,7 @@ checksum = "1261fe7e33c73b354eab43b1273a57c8f967d0391e80353e51f764ac02cf6775"
 [[package]]
 name = "os-xtask-utils"
 version = "0.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "f5e9cccd7bf690840399e09e283b7f5aa219886dc5770c083beee2adca0ffabe"
+source = "git+https://github.com/xushanpu123/os-xtask-utils.git#b5fafb50c2fb850f82f84dce95b605b27fed5ef0"
 dependencies = [
  "once_cell",
 ]
