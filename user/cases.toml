@@ -94,6 +94,7 @@ cases = [
     "sig_simple2",
     "sig_ctrlc",
     "sig_tests",
+    "usertests",
 ]
 
 [ch8]
@@ -115,6 +116,7 @@ cases = [
     "sig_simple2",
     "sig_ctrlc",
     "sig_tests",
+    "usertests",
     "threads",
     "threads_arg",
     "mpsc_sem",
