@@ -1,0 +1,28 @@
+﻿name: CI
+
+on: [push]
+
+env:
+  CARGO_TERM_COLOR: always
+  rust_toolchain: nightly-2023-12-01
+
+jobs:
+
+  make:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+
+      - name: Build syscall
+        uses: actions-rs/cargo@v1
+        with:
+          command: build
+          args: --package syscall
+
+
+
+      - name: usertests
+        run: |
+          cargo qemu --ch 8  --release
+
+      
