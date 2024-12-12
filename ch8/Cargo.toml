@@ -6,7 +6,7 @@ authors = ["zflcs <1491657576@qq.com>"]
 
 [dependencies]
 virtio-drivers = { git = "https://github.com/rcore-os/virtio-drivers", rev = "4ee80e5" }
-polyhal = {git = "https://github.com/xushanpu123/polyhal.git",features = ["kcontext", "trap", "boot"]}
+polyhal = {git = "ssh://git@github.com/xushanpu123/polyhal.git",features = ["kcontext", "trap", "boot"]}
 xmas-elf = "0.8.0"
 spin = "0.9"
 

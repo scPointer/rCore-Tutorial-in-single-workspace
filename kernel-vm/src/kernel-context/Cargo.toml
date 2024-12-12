@@ -11,4 +11,4 @@ foreign = ["spin"]
 
 [dependencies]
 spin = { version = "0.9.4", optional = true }
-polyhal = {git = "https://github.com/xushanpu123/polyhal.git",features = ["kcontext", "trap", "boot"]}
+polyhal = {git = "ssh://git@github.com/xushanpu123/polyhal.git",features = ["kcontext", "trap", "boot"]}
