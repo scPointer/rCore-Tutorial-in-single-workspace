@@ -11,6 +11,8 @@ jobs:
   make:
     runs-on: ubuntu-22.04
     steps:
+      - uses: actions/checkout@v3
+      
       - name: Cache QEMU
         id: cache-qemu
         uses: actions/cache/restore@v4
